@@ -1,3 +1,5 @@
+import { isSafeUrl } from './utils/ssrf';
+
 export type ChaosMode = 'off' | 'error' | 'timeout' | 'random';
 
 export interface AppConfig {
@@ -61,8 +63,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port,
     gracefulDegradationEnabled: parseBoolean(env.GRACEFUL_DEGRADATION_ENABLED, true),
-    upstreamContractsUrl: env.UPSTREAM_CONTRACTS_URL ?? 'https://example.invalid/contracts',
+    upstreamContractsUrl: (() => {
+      const url = env.UPSTREAM_CONTRACTS_URL ?? 'https://example.invalid/contracts';
+      if (!isSafeUrl(url)) {
+        throw new Error(`Invalid UPSTREAM_CONTRACTS_URL: SSRF protection blocked access to internal resource "${url}"`);
+      }
+      return url;
+    })(),
     upstreamTimeoutMs,
+
     chaosMode: parseChaosMode(env.CHAOS_MODE),
     chaosTargets: parseTargets(env.CHAOS_TARGETS),
     chaosProbability,
