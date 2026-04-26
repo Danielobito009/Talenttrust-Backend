@@ -98,9 +98,8 @@ const SENSITIVE_KEYS = [
 const redactionPaths = SENSITIVE_KEYS.flatMap(key => [
   key,
   `*.${key}`,
-  `*..${key}`, // Deep nested paths
-  `${key}.*`,
-  `*..${key}.*`
+  `**.${key}`, // Deep nested paths
+  `${key}.*`
 ]);
 
 /**
@@ -129,8 +128,8 @@ const pinoConfig: LoggerOptions = {
   // Timestamp handling - Pino handles this automatically
   timestamp: pino.stdTimeFunctions.isoTime,
   
-  // Pretty printing in development
-  transport: process.env.NODE_ENV !== 'production' ? {
+  // Pretty printing in development (but not in test)
+  transport: process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test' ? {
     target: 'pino-pretty',
     options: {
       colorize: true,

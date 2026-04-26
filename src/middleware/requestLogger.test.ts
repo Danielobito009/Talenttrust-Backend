@@ -38,16 +38,26 @@ describe('requestLoggerMiddleware', () => {
       method: 'GET',
       url: '/test',
       header: jest.fn(),
-      ip: '127.0.0.1',
-      connection: { remoteAddress: '127.0.0.1' }
+      ip: '127.0.0.1'
     };
 
     mockResponse = {
       setHeader: jest.fn(),
       getHeaders: jest.fn().mockReturnValue({}),
       statusCode: 200,
-      end: jest.fn()
-    };
+      end: jest.fn().mockImplementation(function(this: any, chunk?: any, encoding?: any, cb?: any) {
+        if (typeof chunk === 'function') {
+          cb = chunk;
+          chunk = undefined;
+        }
+        if (typeof encoding === 'function') {
+          cb = encoding;
+          encoding = undefined;
+        }
+        if (cb) cb();
+        return this;
+      })
+    } as any;
 
     mockNext = jest.fn();
   });
@@ -163,7 +173,6 @@ describe('createRequestLoggerMiddleware', () => {
       url: '/api/test',
       header: jest.fn(),
       ip: '127.0.0.1',
-      connection: { remoteAddress: '127.0.0.1' },
       body: { data: 'test' }
     };
 
@@ -171,8 +180,19 @@ describe('createRequestLoggerMiddleware', () => {
       setHeader: jest.fn(),
       getHeaders: jest.fn().mockReturnValue({}),
       statusCode: 201,
-      end: jest.fn()
-    };
+      end: jest.fn().mockImplementation(function(this: any, chunk?: any, encoding?: any, cb?: any) {
+        if (typeof chunk === 'function') {
+          cb = chunk;
+          chunk = undefined;
+        }
+        if (typeof encoding === 'function') {
+          cb = encoding;
+          encoding = undefined;
+        }
+        if (cb) cb();
+        return this;
+      })
+    } as any;
 
     mockNext = jest.fn();
   });
@@ -234,11 +254,9 @@ describe('createRequestLoggerMiddleware', () => {
       mockNext
     );
 
-    // Simulate response end
-    const endCall = mockResponse.end.mock.calls[0];
-    if (endCall && endCall[0]) {
-      // Call the end function with response data
-      endCall[0]('response data');
+    // Simulate response end by calling the actual end function
+    if (mockResponse.end) {
+      (mockResponse.end as jest.Mock)('response data');
     }
 
     // Verify that response body was logged

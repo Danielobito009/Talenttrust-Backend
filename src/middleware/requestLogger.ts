@@ -103,7 +103,7 @@ export function requestLoggerMiddleware(
 /**
  * Sanitize headers to remove sensitive information before logging.
  */
-function sanitizeHeaders(headers: Record<string, any>): Record<string, any> {
+function sanitizeHeaders(headers: Record<string, any> | undefined): Record<string, any> {
   const sanitized: Record<string, any> = {};
   const sensitiveHeaders = [
     'authorization',
@@ -113,6 +113,10 @@ function sanitizeHeaders(headers: Record<string, any>): Record<string, any> {
     'x-forwarded-for',
     'x-real-ip'
   ];
+
+  if (!headers) {
+    return sanitized;
+  }
 
   for (const [key, value] of Object.entries(headers)) {
     if (sensitiveHeaders.includes(key.toLowerCase())) {
