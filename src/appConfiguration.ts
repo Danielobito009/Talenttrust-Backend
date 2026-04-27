@@ -2,6 +2,12 @@ import { isSafeUrl } from './utils/ssrf';
 
 export type ChaosMode = 'off' | 'error' | 'timeout' | 'random';
 
+export interface CircuitBreakerConfig {
+  failureThreshold: number;
+  successThreshold: number;
+  timeoutMs: number;
+}
+
 export interface AppConfig {
   port: number;
   gracefulDegradationEnabled: boolean;
@@ -10,6 +16,7 @@ export interface AppConfig {
   chaosMode: ChaosMode;
   chaosTargets: string[];
   chaosProbability: number;
+  circuitBreaker: CircuitBreakerConfig;
 }
 
 const MAX_TIMEOUT_MS = 10_000;
@@ -75,5 +82,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     chaosMode: parseChaosMode(env.CHAOS_MODE),
     chaosTargets: parseTargets(env.CHAOS_TARGETS),
     chaosProbability,
+    circuitBreaker: {
+      failureThreshold: clamp(toNumber(env.CB_FAILURE_THRESHOLD, 5), 1, 100),
+      successThreshold: clamp(toNumber(env.CB_SUCCESS_THRESHOLD, 1), 1, 20),
+      timeoutMs: clamp(toNumber(env.CB_TIMEOUT_MS, 30_000), 1_000, 300_000),
+    },
   };
 }
