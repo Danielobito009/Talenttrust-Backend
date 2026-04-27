@@ -6,44 +6,14 @@
  * when this file is the program entry and Jest is not running.
  */
 
-import { createApp, attachTerminalHandlers } from './app';
-import { JobType, JobPayload, QueueManager } from './queue';
+import type { Request, Response, NextFunction } from 'express';
+import { createApp, attachTerminalHandlers, shutdownRateLimitStore } from './app';
+import { JobType, JobPayload, QueueManager, AddJobOptions } from './queue';
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth';
 import { auditService } from './audit/service';
-import { EventIngestionService, EventIngestionConfig } from './events/eventIngestionService';
-import { InMemoryEventAuditRepository, EventAuditService } from './repository/eventAuditRepository';
-
-// Type definitions for Express and Node.js
-interface Request {
-  body: any;
-  params: any;
-  query: any;
-  ip?: string;
-  headers: any;
-}
-
-interface Response {
-  status(code: number): Response;
-  json(data: any): Response;
-}
-
-interface NextFunction {
-  (): void;
-}
-
-// Process type definition
-declare const process: {
-  env: { [key: string]: string | undefined };
-  exit(code: number): never;
-  on(event: string, listener: () => void): void;
-};
-
-// Console type definition
-declare const console: {
-  log(...args: any[]): void;
-  error(...args: any[]): void;
-  warn(...args: any[]): void;
-};
+import { validateEnvironment } from './config/environment';
+import { createRateLimiter } from './middleware/rateLimiter';
+import { rateLimitConfig } from './config/rateLimit';
 
 // Validate environment at startup
 // validateEnvironment(); // Commented out for now - will fix later
