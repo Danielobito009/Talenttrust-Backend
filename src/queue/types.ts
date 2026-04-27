@@ -117,6 +117,7 @@ export interface JobResult {
 export interface AddJobOptions {
   priority?: number;
   delay?: number;
+  attempts?: number;
   dedupeKey?: string;
   dedupeTtl?: number;
 }
