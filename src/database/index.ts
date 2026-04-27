@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { Database, ContractMetadata, Contract, User } from './schema';
+import { Database, ContractMetadata, Contract, User, ApiKey } from './schema';
 
 const DB_PATH = path.join(__dirname, '../../data/database.json');
 
@@ -31,7 +31,8 @@ class DatabaseService {
       this.db = {
         contract_metadata: [],
         contracts: [],
-        users: []
+        users: [],
+        api_keys: []
       };
       await this.saveDatabase();
     }
@@ -184,12 +185,79 @@ class DatabaseService {
     return user;
   }
 
+  // API Key operations
+  async createApiKey(data: Omit<ApiKey, 'id' | 'created_at' | 'updated_at'>): Promise<ApiKey> {
+    const db = await this.loadDatabase();
+    const apiKey: ApiKey = {
+      ...data,
+      id: require('crypto').randomUUID(),
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+    db.api_keys.push(apiKey);
+    await this.saveDatabase();
+    return apiKey;
+  }
+
+  async getApiKeyById(id: string): Promise<ApiKey | null> {
+    const db = await this.loadDatabase();
+    return db.api_keys.find(key => key.id === id && key.is_active) || null;
+  }
+
+  async getApiKeyByHash(keyHash: string): Promise<ApiKey | null> {
+    const db = await this.loadDatabase();
+    return db.api_keys.find(key => key.key_hash === keyHash && key.is_active) || null;
+  }
+
+  async updateApiKey(id: string, updates: Partial<Pick<ApiKey, 'name' | 'scope' | 'expires_at' | 'is_active' | 'last_used_at'>>): Promise<ApiKey | null> {
+    const db = await this.loadDatabase();
+    const index = db.api_keys.findIndex(key => key.id === id);
+    
+    if (index === -1) return null;
+
+    db.api_keys[index] = {
+      ...db.api_keys[index],
+      ...updates,
+      updated_at: new Date()
+    };
+
+    await this.saveDatabase();
+    return db.api_keys[index];
+  }
+
+  async deactivateApiKey(id: string): Promise<boolean> {
+    const db = await this.loadDatabase();
+    const apiKey = db.api_keys.find(key => key.id === id);
+    
+    if (!apiKey) return false;
+
+    apiKey.is_active = false;
+    apiKey.updated_at = new Date();
+    
+    await this.saveDatabase();
+    return true;
+  }
+
+  async rotateApiKey(id: string, newKeyHash: string): Promise<ApiKey | null> {
+    const db = await this.loadDatabase();
+    const apiKey = db.api_keys.find(key => key.id === id);
+    
+    if (!apiKey) return null;
+
+    apiKey.key_hash = newKeyHash;
+    apiKey.updated_at = new Date();
+    
+    await this.saveDatabase();
+    return apiKey;
+  }
+
   // Cleanup for testing
   async clearDatabase(): Promise<void> {
     this.db = {
       contract_metadata: [],
       contracts: [],
-      users: []
+      users: [],
+      api_keys: []
     };
     await this.saveDatabase();
   }
