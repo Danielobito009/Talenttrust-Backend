@@ -45,10 +45,20 @@ describe('Validate Middleware', () => {
     await middleware(mockRequest as Request, mockResponse as Response, mockNext);
 
     expect(mockResponse.status).toHaveBeenCalledWith(400);
-    expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'error',
-      message: 'Validation failed',
-    }));
+    expect(mockResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        code: 'validation_error',
+        message: 'Validation failed',
+        details: expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.any(Array),
+            message: expect.any(String),
+            code: expect.any(String),
+          }),
+        ]),
+      }),
+    );
   });
 
   it('should pass non-Zod errors to next()', async () => {

@@ -72,6 +72,39 @@ Response:
 }
 ```
 
+### Viewing DLQ (Failed Jobs)
+
+```bash
+GET /api/v1/jobs/dlq?type=email-notification&limit=50&offset=0
+Authorization: Bearer demo-admin-token
+```
+
+Returns failed jobs with metadata required for safe operations:
+- failed reason
+- attempts made
+- original payload
+- deterministic replay dedupe key (`replay:<jobType>:<originalJobId>`)
+
+### Reprocessing Failed Jobs
+
+```bash
+POST /api/v1/jobs/dlq/reprocess
+Authorization: Bearer demo-admin-token
+Content-Type: application/json
+
+{
+  "type": "email-notification",
+  "jobId": "123",
+  "reason": "Retry after provider outage resolved"
+}
+```
+
+Replay behavior:
+- Reprocess only succeeds for jobs currently in `failed` state
+- Replays are idempotent via deterministic replay IDs
+- Repeating the same replay request does not enqueue duplicates
+- All view/reprocess operations are recorded in immutable audit log entries
+
 ### Programmatic Usage
 
 ```typescript
@@ -151,6 +184,14 @@ Synchronizes blockchain data:
 - Tracks sync progress
 
 ## Security Considerations
+
+### DLQ and Replay Security
+
+- DLQ viewer and reprocessor endpoints are admin-only
+- Every access is authenticated and role-checked
+- Replay requests require an explicit operator reason for accountability
+- Both viewing and replay operations emit `ADMIN_ACTION` audit records
+- Replay dedupe prevents accidental duplicate re-execution
 
 ### Input Validation
 

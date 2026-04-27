@@ -5,7 +5,7 @@ import { AppError, mapErrorToPayload } from '../errors/appError';
  * Handles unknown routes with a structured 404 response.
  */
 export function notFoundHandler(req: Request, _res: Response, next: NextFunction): void {
-  next(new AppError(404, 'not_found', `Route not found: ${req.method} ${req.path}`));
+  next(new AppError(404, 'not_found', 'The requested resource was not found'));
 }
 
 /**

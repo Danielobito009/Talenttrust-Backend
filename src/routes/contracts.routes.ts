@@ -1,18 +1,25 @@
 import { Router } from 'express';
 import { ContractsController } from '../controllers/contracts.controller';
 import { validateSchema } from '../middleware/validate.middleware';
-import { createContractSchema } from '../modules/contracts/dto/contract.dto';
+import { createContractSchema, updateContractSchema } from '../modules/contracts/dto/contract.dto';
 
 const router = Router();
 
-// Configure routes for the Contracts module
-router.get('/', ContractsController.getContracts);
+router.get('/bounds', ContractsController.getBounds);
+router.get('/stats', ContractsController.getContractStats);
 
-// Enforce Zod input validation on the POST route
+router.get('/', ContractsController.getContracts);
+router.get('/:id', ContractsController.getContractById);
+
 router.post(
-  '/', 
-  validateSchema(createContractSchema), 
-  ContractsController.createContract
+  '/',
+  validateSchema(createContractSchema),
+  ContractsController.createContract,
 );
+
+// OCC-aware update: validate version field before delegating to controller
+router.patch('/:id', validateSchema(updateContractSchema), ContractsController.updateContract);
+
+router.delete('/:id', ContractsController.deleteContract);
 
 export default router;

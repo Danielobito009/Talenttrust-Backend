@@ -1,5 +1,6 @@
 /** @type {import('ts-jest').JestConfigWithTsJest} */
 module.exports = {
+  setupFiles: ['<rootDir>/src/test-setup.ts'],
   ...(process.env.CI
     ? {}
     : {

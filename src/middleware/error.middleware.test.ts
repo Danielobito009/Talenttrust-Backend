@@ -21,19 +21,19 @@ describe('Error Middleware', () => {
     jest.restoreAllMocks();
   });
 
-  it('should handle standard 500 error', () => {
-    const err = new Error('Test error');
+  it('should handle standard 500 error with safe message', () => {
+    const err = new Error('Sensitive DB connection string exposed');
     errorHandler(err, mockRequest as Request, mockResponse as Response, mockNext);
 
     expect(mockResponse.status).toHaveBeenCalledWith(500);
     expect(mockResponse.json).toHaveBeenCalledWith({
       status: 'error',
       statusCode: 500,
-      message: 'Test error',
+      message: 'An unexpected error occurred',
     });
   });
 
-  it('should handle custom error status', () => {
+  it('should handle custom error status with safe message', () => {
     const err: any = new Error('Not found');
     err.status = 404;
     errorHandler(err, mockRequest as Request, mockResponse as Response, mockNext);
@@ -46,10 +46,7 @@ describe('Error Middleware', () => {
     });
   });
 
-  it('should obscure 500 errors in production', () => {
-    const originalEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = 'production';
-    
+  it('should obscure 500 errors in all environments', () => {
     const err = new Error('Sensitive DB Error');
     errorHandler(err, mockRequest as Request, mockResponse as Response, mockNext);
 
@@ -57,9 +54,7 @@ describe('Error Middleware', () => {
     expect(mockResponse.json).toHaveBeenCalledWith({
       status: 'error',
       statusCode: 500,
-      message: 'Internal server error',
+      message: 'An unexpected error occurred',
     });
-
-    process.env.NODE_ENV = originalEnv;
   });
 });

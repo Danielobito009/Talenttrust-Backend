@@ -1,7 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
 import { promisify } from "util";
-import { healthRouter } from "./health";
 
 /**
  * Blue-green deployment manager.
@@ -33,7 +32,7 @@ async function writeState(state: DeploymentState): Promise<void> {
   await writeFileAsync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-async function checkHealth(port: string): Promise<boolean> {
+async function checkHealth(_port: string): Promise<boolean> {
   try {
     // Mock health check to port (in real: axios.get(`http://localhost:${port}/health/ready`))
     // For now, simple port check or exec

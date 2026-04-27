@@ -8,46 +8,70 @@
  * @security
  *  - express.json() body parser is scoped to this app instance only.
  *  - All routes return JSON; no HTML rendering surface.
- *  - Helmet-style headers should be added here when the dependency is
- *    introduced (tracked in docs/backend/security.md).
+ *  - CORS and Helmet security headers are applied via applySecurityMiddleware.
  */
 
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
+import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
 import { healthRouter } from './routes/health';
+
 import contractsModuleRouter from './routes/contracts.routes';
+
 import reputationRouter from './routes/reputation.routes';
-import apiKeysRouter from './routes/apiKeys.routes';
+import dependencyScanRouter from './routes/dependency-scan.routes';
 import { requestIdMiddleware } from './middleware/requestId';
+import { applySecurityMiddleware } from './middleware/security';
+import { MetricsService } from './observability/metrics-service';
+import { rateLimitStore } from './config/rateLimit';
+
+interface AppFactoryOptions {
+  includeTerminalHandlers?: boolean;
+}
+
+export function attachTerminalHandlers(app: express.Application): void {
+  // ── 404 handler ──────────────────────────────────────────────────────────
+  app.use(notFoundHandler);
+
+  // ── Global error handler ─────────────────────────────────────────────────
+  app.use(errorHandler);
+}
 
 /**
  * Creates and configures the Express application.
  *
  * @returns Configured Express app instance (not yet listening).
  */
-export function createApp(): express.Application {
+export function createApp(options: AppFactoryOptions = {}): express.Application {
   const app = express();
+  const { includeTerminalHandlers = true } = options;
+
+  // ── Security Middleware ───────────────────────────────────────────────────
+  applySecurityMiddleware(app);
+
+  const metricsService = new MetricsService(
+    process.env['SERVICE_NAME'] ?? 'talenttrust-backend',
+  );
 
   // ── Middleware ────────────────────────────────────────────────────────────
   app.use(express.json());
   app.use(requestIdMiddleware);
+  app.use(metricsService.trackHttpRequest.bind(metricsService));
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
   app.use('/api/v1/reputation', reputationRouter);
-  app.use('/api/v1', apiKeysRouter);
+  app.use('/api/v1/dependency-scan', dependencyScanRouter);
 
-  // ── 404 handler ──────────────────────────────────────────────────────────
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: 'Not Found' });
-  });
-
-  // ── Global error handler ─────────────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Internal Server Error' });
-  });
+  if (includeTerminalHandlers) {
+    attachTerminalHandlers(app);
+  }
 
   return app;
+}
+
+/** Shutdown handler for graceful termination. */
+export function shutdownRateLimitStore(): void {
+  rateLimitStore.destroy();
+  console.log('[rateLimit] Store shutdown complete');
 }

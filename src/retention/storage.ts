@@ -7,7 +7,7 @@
  * @module retention/storage
  */
 
-import { RetainedData, DataEntityType, DataClassification, ArchivalStorageType } from './types';
+import { RetainedData, ArchivalStorageType } from './types';
 
 /**
  * Abstract storage provider interface

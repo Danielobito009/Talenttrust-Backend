@@ -140,7 +140,9 @@ describe('createApp()', () => {
     it('returns JSON error body for unknown route', async () => {
       const res = await request(server, 'GET', '/unknown');
       const json = JSON.parse(res.body);
-      expect(json).toHaveProperty('error', 'Not Found');
+      expect(json.error).toEqual(
+        expect.objectContaining({ code: 'not_found', message: 'The requested resource was not found' }),
+      );
     });
 
     it('returns 404 for unknown nested path', async () => {

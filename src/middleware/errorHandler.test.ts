@@ -23,13 +23,13 @@ describe('Error Handler Middleware', () => {
     expect(res.body.success).toBe(false);
   });
 
-  it('handles generic Error as 500', async () => {
+  it('handles generic Error as 500 with safe code', async () => {
     const res = await request(app).get('/generic');
     expect(res.status).toBe(500);
-    expect(res.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(res.body.error.code).toBe('internal_error');
   });
 
-  it('triggers default message branch', async () => {
+  it('uses safe fallback for empty error messages', async () => {
     const res = await request(app).get('/empty-msg');
     expect(res.body.error.message).toBe('An unexpected error occurred');
   });
@@ -39,11 +39,11 @@ describe('Error Handler Middleware', () => {
     expect(res.status).toBe(404);
   });
 
-  it('shows stack trace in development', async () => {
+  it('never includes stack trace regardless of NODE_ENV', async () => {
     const oldEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'development';
     const res = await request(app).get('/error');
-    expect(res.body.error).toHaveProperty('stack');
+    expect(res.body.error).not.toHaveProperty('stack');
     process.env.NODE_ENV = oldEnv;
   });
 });

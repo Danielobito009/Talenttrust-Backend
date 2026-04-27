@@ -25,7 +25,9 @@ export type AuditAction =
   | 'AUTH_LOGIN'
   | 'AUTH_LOGOUT'
   | 'AUTH_FAILED'
-  | 'ADMIN_ACTION';
+  | 'ADMIN_ACTION'
+  | 'ENDPOINT_ACCESS'
+  | 'ENDPOINT_MUTATION';
 
 /** Severity level of the audit event. */
 export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL';

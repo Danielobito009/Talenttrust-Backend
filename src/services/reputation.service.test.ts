@@ -1,6 +1,5 @@
 import { ReputationService } from './reputation.service';
 import { reputationStore } from '../models/reputation.store';
-import { UpdateReputationPayload } from '../types/reputation';
 
 describe('ReputationService', () => {
   const freelancerId = 'user-123';

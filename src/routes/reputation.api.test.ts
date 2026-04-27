@@ -27,16 +27,16 @@ describe('Reputation API Integration Tests', () => {
         .send({ reviewerId: 'client-1' });
       
       expect(response.status).toBe(400);
-      expect(response.body.message).toContain('reviewerId and rating are required');
+      expect(response.body.message).toBe('Validation failed');
     });
-
+ 
     it('should fail with 400 for invalid rating bounds', async () => {
       const response = await request(app)
         .put(`/api/v1/reputation/${freelancerId}`)
         .send({ reviewerId: 'client-1', rating: 10 });
       
       expect(response.status).toBe(400);
-      expect(response.body.message).toContain('Rating must be between 1 and 5');
+      expect(response.body.message).toBe('Validation failed');
     });
 
     it('should successfully update and return the new profile', async () => {

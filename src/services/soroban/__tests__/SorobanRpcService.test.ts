@@ -109,6 +109,10 @@ describe('SorobanRpcService', () => {
   });
 
   describe('getTransactionStatus', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
     it('should return the transaction status when found', async () => {
       const mockResponse = { status: rpc.Api.GetTransactionStatus.SUCCESS };
       mockGetTransaction.mockResolvedValue(mockResponse);
@@ -123,7 +127,16 @@ describe('SorobanRpcService', () => {
         status: rpc.Api.GetTransactionStatus.NOT_FOUND,
       });
 
-      await expect(service.getTransactionStatus('testhash', 50, 10)).rejects.toThrow(
+      // Control Date.now() so the loop runs 3 times then times out — no real waiting.
+      const base = 1_000_000;
+      jest.spyOn(Date, 'now')
+        .mockReturnValueOnce(base)        // startTime assignment
+        .mockReturnValueOnce(base)        // while check #1 — 0 ms elapsed
+        .mockReturnValueOnce(base + 20)   // while check #2 — 20 ms elapsed
+        .mockReturnValueOnce(base + 40)   // while check #3 — 40 ms elapsed
+        .mockReturnValue(base + 100);     // while check #4 — 100 ms elapsed → timeout
+
+      await expect(service.getTransactionStatus('testhash', 50, 1)).rejects.toThrow(
         /Transaction polling timed out/
       );
       expect(mockGetTransaction.mock.calls.length).toBeGreaterThan(1);

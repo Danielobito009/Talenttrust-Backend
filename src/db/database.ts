@@ -80,6 +80,7 @@ function runMigrations(db: Database.Database): void {
                             CHECK (status IN (
                               'draft', 'active', 'completed', 'disputed', 'cancelled'
                             )),
+      version       INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
       created_at    TEXT    NOT NULL
     );
 
@@ -92,4 +93,14 @@ function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_contracts_status
       ON contracts(status);
   `);
+
+  // Migration guard: add version column to existing databases that pre-date OCC.
+  // PRAGMA table_info returns one row per column; if 'version' is absent we add it.
+  const columns = db.pragma("table_info(contracts)") as Array<{ name: string }>;
+  const hasVersion = columns.some((col) => col.name === "version");
+  if (!hasVersion) {
+    db.exec(
+      "ALTER TABLE contracts ADD COLUMN version INTEGER NOT NULL DEFAULT 0"
+    );
+  }
 }

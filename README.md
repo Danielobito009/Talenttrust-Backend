@@ -176,18 +176,24 @@ Coverage thresholds are enforced in Jest at 95% for statements, branches, functi
 4. Current persistence is in-memory and intended for testability and local development; production hardening should add durable storage and capacity limits.
 5. Trust boundary remains the ingestion endpoint; event authenticity and signature verification are future integration concerns.
 
-## Environment Variables
-
-All configuration is managed through `src/config/` and validated at startup. Copy `.env.example` to `.env` to get started. See [docs/backend/config.md](docs/backend/config.md) for full details.
+All configuration is managed through `src/config/` and validated at startup using **Zod**. This ensures a fail-fast behavior with clear error messages. Copy `.env.example` to `.env` to get started. See [docs/backend/config.md](docs/backend/config.md) for full details.
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `3001` | HTTP port for the Express server |
-| `NODE_ENV` | `development` | Runtime environment |
+| `NODE_ENV` | `development` | Runtime environment (`development`, `staging`, `production`, `test`) |
+| `API_BASE_URL` | `http://localhost:${PORT}` | Base URL for the API |
+| `DEBUG` | `false` | Enable/disable debug logging |
+| `DATABASE_URL` | *(optional)* | Database connection string |
+| `JWT_SECRET` | *(optional)* | Secret used for JWT signing (min 8 chars) |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API endpoint |
 | `STELLAR_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Network passphrase for signing |
 | `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint |
 | `SOROBAN_CONTRACT_ID` | *(empty)* | Deployed escrow contract ID |
+| `ACTIVE_COLOR` | `blue` | Active backend color for blue-green routing |
+| `BLUE_PORT` | `3001` | Port for the 'blue' backend |
+| `GREEN_PORT` | `3002` | Port for the 'green' backend |
+
 
 ## API Endpoints
 
