@@ -36,14 +36,14 @@ export const ACCESS_CONTROL_MATRIX: Record<Role, Partial<Record<Resource, Action
   freelancer: {
     contracts: ['create', 'read'],
     users: ['read'],
-    reputation: ['read'],
+    reputation: ['read', 'update'], // Can rate clients after contract completion
     disputes: ['create', 'read'],
     health: ['read'],
   },
   client: {
     contracts: ['create', 'read', 'update'],
     users: ['read'],
-    reputation: ['read'],
+    reputation: ['read', 'update'], // Can rate freelancers after contract completion
     disputes: ['create', 'read'],
     health: ['read'],
   },

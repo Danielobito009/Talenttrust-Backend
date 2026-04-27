@@ -23,6 +23,8 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { applySecurityMiddleware } from './middleware/security';
 import { MetricsService } from './observability/metrics-service';
 import { rateLimitStore } from './config/rateLimit';
+import { ReputationService } from './services/reputation.service';
+import { getDb } from './db/database';
 
 interface AppFactoryOptions {
   includeTerminalHandlers?: boolean;
@@ -56,6 +58,11 @@ export function createApp(options: AppFactoryOptions = {}): express.Application 
   app.use(express.json());
   app.use(requestIdMiddleware);
   app.use(metricsService.trackHttpRequest.bind(metricsService));
+
+  // ── Initialize Services ───────────────────────────────────────────────────
+  // Initialize reputation service with database connection
+  const db = getDb();
+  ReputationService.initialize(db);
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);

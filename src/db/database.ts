@@ -92,15 +92,41 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_contracts_status
       ON contracts(status);
+
+    CREATE TABLE IF NOT EXISTS reputation_entries (
+      id          TEXT    PRIMARY KEY,
+      reviewer_id TEXT    NOT NULL REFERENCES users(id),
+      target_id   TEXT    NOT NULL REFERENCES users(id),
+      rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      comment     TEXT    CHECK (length(comment) <= 1000),
+      context_id  TEXT    NOT NULL REFERENCES contracts(id),
+      created_at  TEXT    NOT NULL,
+      UNIQUE(reviewer_id, target_id, context_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reputation_target_id
+      ON reputation_entries(target_id);
+
+    CREATE INDEX IF NOT EXISTS idx_reputation_context_id
+      ON reputation_entries(context_id);
   `);
 
   // Migration guard: add version column to existing databases that pre-date OCC.
   // PRAGMA table_info returns one row per column; if 'version' is absent we add it.
-  const columns = db.pragma("table_info(contracts)") as Array<{ name: string }>;
-  const hasVersion = columns.some((col) => col.name === "version");
+  const contractColumns = db.pragma("table_info(contracts)") as Array<{ name: string }>;
+  const hasVersion = contractColumns.some((col) => col.name === "version");
   if (!hasVersion) {
     db.exec(
       "ALTER TABLE contracts ADD COLUMN version INTEGER NOT NULL DEFAULT 0"
+    );
+  }
+
+  // Migration guard: add comment column to reputation_entries if it doesn't exist
+  const reputationColumns = db.pragma("table_info(reputation_entries)") as Array<{ name: string }>;
+  const hasComment = reputationColumns.some((col) => col.name === "comment");
+  if (!hasComment && reputationColumns.length > 0) {
+    db.exec(
+      "ALTER TABLE reputation_entries ADD COLUMN comment TEXT CHECK (length(comment) <= 1000)"
     );
   }
 }
