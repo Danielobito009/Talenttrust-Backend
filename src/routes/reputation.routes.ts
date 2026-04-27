@@ -3,9 +3,15 @@ import { ReputationController } from '../controllers/reputation.controller';
 import { registry } from '../docs/openapi-registry';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
 import { validateSchema } from '../middleware/validate.middleware';
+import { requireAuth, requirePermission } from '../middleware/authorization';
 import { z } from 'zod';
+import { authenticateMiddleware } from '../auth/authenticate';
+import { requirePermission } from '../auth/middleware';
 
 const router = Router();
+
+// ── Authentication guard — all reputation routes require a valid JWT ──────────
+router.use(requireAuth);
 
 registry.registerPath({
   method: 'get',
@@ -32,8 +38,9 @@ registry.registerPath({
                 type: 'object',
                 properties: {
                   freelancerId: { type: 'string' },
-                  rating: { type: 'number' },
-                  reviewCount: { type: 'number' }
+                  score: { type: 'number' },
+                  totalRatings: { type: 'number' },
+                  reviews: { type: 'array' }
                 }
               }
             }
@@ -45,12 +52,18 @@ registry.registerPath({
 });
 
 // GET /api/v1/reputation/:id - Retrieve reputation for a freelancer
-router.get('/:id', ReputationController.getProfile);
+// All authenticated roles (admin, client, freelancer) may read reviews.
+router.get('/:id', requirePermission('reviews', 'read'), ReputationController.getProfile);
 
+/**
+ * POST /api/v1/reputation/:id/rate
+ * Create a new reputation rating. Requires authentication.
+ */
 registry.registerPath({
-  method: 'put',
-  path: '/reputation/{id}',
-  summary: 'Update freelancer reputation',
+  method: 'post',
+  path: '/reputation/{id}/rate',
+  summary: 'Create reputation rating',
+  security: [{ bearerAuth: [] }],
   parameters: [
     {
       name: 'id',
@@ -69,27 +82,35 @@ registry.registerPath({
     }
   },
   responses: {
-    200: {
-      description: 'Updated reputation profile',
+    201: {
+      description: 'Rating created successfully',
       content: {
         'application/json': {
           schema: {
             type: 'object',
             properties: {
-              status: { type: 'string', example: 'success' }
+              status: { type: 'string', example: 'success' },
+              data: { type: 'object' }
             }
           }
         }
       }
-    }
+    },
+    400: { description: 'Invalid payload' },
+    403: { description: 'Forbidden - self-rating or unauthorized' },
+    409: { description: 'Conflict - duplicate rating' },
+    422: { description: 'Validation error' }
   }
 });
 
-// PUT /api/v1/reputation/:id - Update reputation for a freelancer (add review)
+// PUT /api/v1/reputation/:id - Submit a reputation review for a freelancer.
+// Requires 'reviews.create' permission — granted to admin, client, freelancer.
 router.put(
-  '/:id', 
+  '/:id',
+  requirePermission('reviews', 'create'),
   validateSchema(z.object({ body: updateReputationSchema, params: z.object({ id: z.string().min(1) }) })),
   ReputationController.updateProfile
 );
 
 export default router;
+

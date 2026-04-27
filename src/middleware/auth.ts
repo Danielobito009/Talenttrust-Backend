@@ -1,4 +1,31 @@
-import { Request, Response, NextFunction } from 'express';
+/**
+ * @module auth
+ * @description JWT authentication middleware for TalentTrust.
+ *
+ * This module re-exports the canonical JWT-based middleware from
+ * `./authorization` as the authoritative authentication layer.
+ *
+ * Token verification uses HS256 with `JWT_SECRET` from the environment.
+ * Demo tokens are no longer accepted in any environment.
+ *
+ * Expected JWT payload:
+ * ```json
+ * {
+ *   "sub":   "<userId>",
+ *   "email": "<userEmail>",
+ *   "role":  "admin" | "client" | "freelancer",
+ *   "iat":   <issuedAt>,
+ *   "exp":   <expiresAt>
+ * }
+ * ```
+ *
+ * On success `req.user` is set to `{ id, email, role }`.
+ * On failure the middleware responds with HTTP 401.
+ */
+
+// Re-export the canonical types and middleware so existing callers that
+// import from './auth' continue to work without changes.
+import { requirePermission } from './authorization';
 import { database } from '../database';
 
 export interface AuthenticatedRequest extends Request {
@@ -13,7 +40,14 @@ export const authMiddleware = async (req: AuthenticatedRequest, res: Response, n
   const authHeader = req.headers.authorization;
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(401).json({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentication required',
+        requestId,
+      },
+    });
   }
 
   const token = authHeader.substring(7);
@@ -49,39 +83,58 @@ export const authMiddleware = async (req: AuthenticatedRequest, res: Response, n
     return next();
   }
 
-  return res.status(401).json({ error: 'Invalid authentication token' });
+  const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  return res.status(401).json({
+    error: {
+      code: 'unauthorized',
+      message: 'Invalid authentication token',
+      requestId,
+    },
+  });
 };
 
 export const requireContractAccess = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   if (!req.user) {
-    return res.status(401).json({ error: 'Authentication required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(401).json({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentication required',
+        requestId,
+      },
+    });
   }
 
+// Specialized RBAC guard used by contract metadata routes
+export const requireContractAccess = requirePermission('contracts', 'update', async (req) => {
   const contractId = req.params.contractId;
   if (!contractId) {
-    return res.status(400).json({ error: 'Contract ID required' });
+    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+    return res.status(400).json({
+      error: {
+        code: 'bad_request',
+        message: 'Contract ID required',
+        requestId,
+      },
+    });
   }
 
-  // For demo purposes, we'll allow access to all contracts
-  // In production, this would check if user has access to the contract
+  // Admins have full access
   if (req.user.role === 'admin') {
     return next();
   }
 
-  // Check if contract exists and user has access
+  // Check if contract exists
   const contract = await database.getContractById(contractId);
   if (!contract) {
-    // For testing purposes, allow access to non-existent contracts
-    // In production, this would return 404
-    return next();
+    return res.status(400).json({ error: 'Contract not found' });
   }
 
-  // For demo, allow access if user created the contract or is admin
+  // Check if user has access (creator only for now)
   if (contract.created_by === req.user.id) {
     return next();
   }
 
-  // For demo purposes, allow all authenticated users to access contracts
-  // In production, this would return 403 for unauthorized access
-  return next();
+  return res.status(403).json({ error: 'Access denied: You do not have permission to access this contract' });
 };
+
