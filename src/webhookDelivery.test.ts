@@ -1,444 +1,278 @@
-/**
- * Integration tests for DLQ health metrics.
- *
- * Acceptance criteria verified here:
- *  1. DLQ population: gauges accurately track depth and oldest-age.
- *  2. DLQ drainage: gauges update correctly as entries are removed.
- *  3. Empty DLQ: gauges reset to exactly zero when the DLQ is empty.
- *  4. Provider sanitization: long/special-char IDs are sanitized for labels.
- *  5. Interval sampling: metrics are updated at the configured interval.
- */
-
-import { InMemoryDlqStore, type DlqEntry } from './dlqStore';
-import {
-  updateDlqMetrics,
-  startDlqMetricsSampling,
-  sanitizeProvider,
-  _resetDlqGauges,
-  _getDlqDepthGauge,
-  _getDlqOldestAgeGauge,
-} from './webhookMetrics';
+import { Registry } from 'prom-client';
+import { WebhookDeliveryService, DeliveryPayload } from './webhookDelivery';
+import { getLabelValues } from './webhookMetrics';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve after `ms` milliseconds.
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function makeRegistry() {
+  return new Registry();
 }
 
-/**
- * Create a DLQ entry with the given provider ID and age (in seconds).
- */
-function makeDlqEntry(
-  providerId: string,
-  ageSeconds: number,
-  deliveryId: string = `evt-${Date.now()}`,
-): DlqEntry {
-  return {
-    providerId,
-    deliveryId,
-    targetUrl: 'https://example.com/hook',
-    payload: { event: 'test' },
-    timestamp: Date.now() - ageSeconds * 1_000,
-  };
+function makeService(registry: Registry) {
+  return new WebhookDeliveryService(registry);
 }
 
-/**
- * Get the current value of a gauge for a specific provider label.
- */
-async function getGaugeValue(
-  gauge: ReturnType<typeof _getDlqDepthGauge>,
-  provider: string,
-): Promise<number | undefined> {
-  const metrics = await gauge.get();
-  const match = metrics.values.find((v) => v.labels.provider === provider);
-  return match?.value;
+const basePayload: DeliveryPayload = {
+  provider: 'stripe',
+  url: 'https://example.com/webhook',
+  body: { event: 'payment.succeeded' },
+};
+
+async function getCounterValue(
+  registry: Registry,
+  labels: Record<string, string>,
+): Promise<number> {
+  const metrics = await registry.getMetricsAsJSON();
+  const counter = metrics.find((m) => m.name === 'webhook_delivery_attempts_total');
+  if (!counter || !('values' in counter)) return 0;
+  const match = (counter.values as Array<{ labels: Record<string, string>; value: number }>).find(
+    (v) =>
+      Object.entries(labels).every(([k, val]) => v.labels[k] === val),
+  );
+  return match?.value ?? 0;
+}
+
+async function getHistogramSampleCount(
+  registry: Registry,
+  labels: Record<string, string>,
+): Promise<number> {
+  const metrics = await registry.getMetricsAsJSON();
+  const hist = metrics.find((m) => m.name === 'webhook_delivery_latency_seconds');
+  if (!hist || !('values' in hist)) return 0;
+  const countEntry = (
+    hist.values as Array<{ labels: Record<string, string>; value: number; metricName?: string }>
+  ).find(
+    (v) =>
+      v.metricName === 'webhook_delivery_latency_seconds_count' &&
+      Object.entries(labels).every(([k, val]) => v.labels[k] === val),
+  );
+  return countEntry?.value ?? 0;
 }
 
 // ---------------------------------------------------------------------------
-// Setup / teardown
+// getLabelValues unit tests
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
-  _resetDlqGauges();
-});
-
-// ---------------------------------------------------------------------------
-// 1. sanitizeProvider — label sanitization
-// ---------------------------------------------------------------------------
-
-describe('sanitizeProvider', () => {
-  it('converts to lowercase', () => {
-    expect(sanitizeProvider('ProviderABC')).toBe('providerabc');
+describe('getLabelValues', () => {
+  it('returns success for 2xx status codes', () => {
+    expect(getLabelValues(200)).toEqual({ status: 'success', reason: 'unknown' });
+    expect(getLabelValues(201)).toEqual({ status: 'success', reason: 'unknown' });
   });
 
-  it('replaces special characters with underscores', () => {
-    expect(sanitizeProvider('provider@123!xyz')).toBe('provider_123_xyz');
+  it('returns 4xx_client_error for 4xx status codes', () => {
+    expect(getLabelValues(400)).toEqual({ status: 'failure', reason: '4xx_client_error' });
+    expect(getLabelValues(404)).toEqual({ status: 'failure', reason: '4xx_client_error' });
   });
 
-  it('preserves hyphens and underscores', () => {
-    expect(sanitizeProvider('provider-123_xyz')).toBe('provider-123_xyz');
+  it('returns 5xx_server_error for 5xx status codes', () => {
+    expect(getLabelValues(500)).toEqual({ status: 'failure', reason: '5xx_server_error' });
+    expect(getLabelValues(503)).toEqual({ status: 'failure', reason: '5xx_server_error' });
   });
 
-  it('truncates to 32 characters', () => {
-    const longId = 'a'.repeat(50);
-    expect(sanitizeProvider(longId)).toHaveLength(32);
+  it('returns timeout for ETIMEDOUT error', () => {
+    expect(getLabelValues(undefined, 'ETIMEDOUT')).toEqual({ status: 'failure', reason: 'timeout' });
+    expect(getLabelValues(undefined, 'ECONNABORTED')).toEqual({ status: 'failure', reason: 'timeout' });
   });
 
-  it('handles empty string', () => {
-    expect(sanitizeProvider('')).toBe('');
+  it('returns dns_resolution_failure for ENOTFOUND / EAI_AGAIN', () => {
+    expect(getLabelValues(undefined, 'ENOTFOUND')).toEqual({ status: 'failure', reason: 'dns_resolution_failure' });
+    expect(getLabelValues(undefined, 'EAI_AGAIN')).toEqual({ status: 'failure', reason: 'dns_resolution_failure' });
   });
 
-  it('handles unicode characters', () => {
-    expect(sanitizeProvider('provider-émoji-🚀')).toBe('provider-_moji-__');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 2. updateDlqMetrics — gauge updates
-// ---------------------------------------------------------------------------
-
-describe('updateDlqMetrics', () => {
-  it('sets depth gauge to the correct value for each provider', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 10));
-    store.push(makeDlqEntry('acme', 20));
-    store.push(makeDlqEntry('partnerx', 5));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(2);
-    expect(await getGaugeValue(depthGauge, 'partnerx')).toBe(1);
+  it('returns connection_refused for ECONNREFUSED', () => {
+    expect(getLabelValues(undefined, 'ECONNREFUSED')).toEqual({ status: 'failure', reason: 'connection_refused' });
   });
 
-  it('sets oldest-age gauge to the age of the oldest entry', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 100)); // oldest
-    store.push(makeDlqEntry('acme', 50));  // newer
-
-    updateDlqMetrics(store);
-
-    const ageGauge = _getDlqOldestAgeGauge();
-    const age = await getGaugeValue(ageGauge, 'acme');
-
-    // Age should be approximately 100 seconds (allow 1-second tolerance)
-    expect(age).toBeGreaterThanOrEqual(99);
-    expect(age).toBeLessThanOrEqual(101);
-  });
-
-  it('resets gauges to zero when a provider queue is empty', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 10));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-
-    // Drain the queue
-    store.drain('acme', 1);
-    updateDlqMetrics(store);
-
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(0);
-  });
-
-  it('handles multiple providers independently', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('alpha', 10));
-    store.push(makeDlqEntry('beta', 20));
-    store.push(makeDlqEntry('gamma', 30));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'alpha')).toBe(1);
-    expect(await getGaugeValue(depthGauge, 'beta')).toBe(1);
-    expect(await getGaugeValue(depthGauge, 'gamma')).toBe(1);
-  });
-
-  it('omits providers with empty queues from oldest-age gauge', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 10));
-
-    updateDlqMetrics(store);
-
-    const ageGauge = _getDlqOldestAgeGauge();
-    expect(await getGaugeValue(ageGauge, 'acme')).toBeGreaterThan(0);
-
-    // Drain the queue
-    store.drain('acme', 1);
-    updateDlqMetrics(store);
-
-    // Age gauge should be reset to zero (or undefined, depending on prom-client behavior)
-    const ageAfterDrain = await getGaugeValue(ageGauge, 'acme');
-    expect(ageAfterDrain === 0 || ageAfterDrain === undefined).toBe(true);
+  it('returns unknown for unrecognised errors', () => {
+    expect(getLabelValues(undefined, 'SOME_WEIRD_CODE')).toEqual({ status: 'failure', reason: 'unknown' });
+    expect(getLabelValues()).toEqual({ status: 'failure', reason: 'unknown' });
   });
 });
 
 // ---------------------------------------------------------------------------
-// 3. DLQ population and drainage — acceptance criteria
+// WebhookDeliveryService integration tests
 // ---------------------------------------------------------------------------
 
-describe('DLQ population and drainage', () => {
-  it('AC1 — gauges track depth correctly as entries are added', async () => {
-    const store = new InMemoryDlqStore();
-
-    // Start with empty DLQ
-    updateDlqMetrics(store);
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBeUndefined();
-
-    // Add one entry
-    store.push(makeDlqEntry('acme', 10));
-    updateDlqMetrics(store);
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-
-    // Add two more entries
-    store.push(makeDlqEntry('acme', 20));
-    store.push(makeDlqEntry('acme', 30));
-    updateDlqMetrics(store);
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(3);
-  });
-
-  it('AC2 — gauges track oldest-age correctly as entries age', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 50)); // 50 seconds old
-
-    updateDlqMetrics(store);
-
-    const ageGauge = _getDlqOldestAgeGauge();
-    const age1 = await getGaugeValue(ageGauge, 'acme');
-    expect(age1).toBeGreaterThanOrEqual(49);
-    expect(age1).toBeLessThanOrEqual(51);
-
-    // Wait 1 second and re-sample — age should increase
-    await sleep(1000);
-    updateDlqMetrics(store);
-
-    const age2 = await getGaugeValue(ageGauge, 'acme');
-    expect(age2).toBeGreaterThan(age1!);
-  }, 3000);
-
-  it('AC3 — gauges update correctly as entries are drained', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 10, 'evt-1'));
-    store.push(makeDlqEntry('acme', 20, 'evt-2'));
-    store.push(makeDlqEntry('acme', 30, 'evt-3'));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(3);
-
-    // Drain one entry
-    store.drain('acme', 1);
-    updateDlqMetrics(store);
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(2);
-
-    // Drain remaining entries
-    store.drain('acme', 2);
-    updateDlqMetrics(store);
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(0);
-  });
-
-  it('AC4 — gauges reset to exactly zero when DLQ is empty', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('acme', 10));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    const ageGauge = _getDlqOldestAgeGauge();
-
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-    expect(await getGaugeValue(ageGauge, 'acme')).toBeGreaterThan(0);
-
-    // Drain all entries
-    store.drain('acme', 1);
-    updateDlqMetrics(store);
-
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(0);
-
-    const ageAfterDrain = await getGaugeValue(ageGauge, 'acme');
-    expect(ageAfterDrain === 0 || ageAfterDrain === undefined).toBe(true);
-  });
-
-  it('AC5 — provider A DLQ does not affect provider B gauges', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('providerA', 10));
-    store.push(makeDlqEntry('providerA', 20));
-    store.push(makeDlqEntry('providerB', 5));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'providera')).toBe(2);
-    expect(await getGaugeValue(depthGauge, 'providerb')).toBe(1);
-
-    // Drain provider A completely
-    store.drain('providerA', 2);
-    updateDlqMetrics(store);
-
-    expect(await getGaugeValue(depthGauge, 'providera')).toBe(0);
-    expect(await getGaugeValue(depthGauge, 'providerb')).toBe(1); // unchanged
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. startDlqMetricsSampling — interval sampling
-// ---------------------------------------------------------------------------
-
-describe('startDlqMetricsSampling', () => {
-  it('updates metrics at the configured interval', async () => {
-    const store = new InMemoryDlqStore();
-    const intervalMs = 100; // 100 ms for fast test
-
-    const stopSampling = startDlqMetricsSampling(store, intervalMs);
-
-    // Add an entry after sampling starts
-    store.push(makeDlqEntry('acme', 10));
-
-    // Wait for one interval cycle
-    await sleep(intervalMs + 50);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-
-    // Add another entry
-    store.push(makeDlqEntry('acme', 20));
-
-    // Wait for another interval cycle
-    await sleep(intervalMs + 50);
-
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(2);
-
-    stopSampling();
-  }, 5000);
-
-  it('stops sampling when the stop function is called', async () => {
-    const store = new InMemoryDlqStore();
-    const intervalMs = 100;
-
-    const stopSampling = startDlqMetricsSampling(store, intervalMs);
-
-    store.push(makeDlqEntry('acme', 10));
-    await sleep(intervalMs + 50);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-
-    // Stop sampling
-    stopSampling();
-
-    // Add another entry — should NOT be reflected in gauges
-    store.push(makeDlqEntry('acme', 20));
-    await sleep(intervalMs + 50);
-
-    // Gauge should still show 1 (not updated after stop)
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-  }, 5000);
-
-  it('calling startDlqMetricsSampling multiple times stops the previous interval', async () => {
-    const store = new InMemoryDlqStore();
-    const intervalMs = 100;
-
-    const stop1 = startDlqMetricsSampling(store, intervalMs);
-    const stop2 = startDlqMetricsSampling(store, intervalMs);
-
-    // Only the second interval should be active
-    store.push(makeDlqEntry('acme', 10));
-    await sleep(intervalMs + 50);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(1);
-
-    stop2();
-
-    // Calling stop1 should be a no-op (already stopped by stop2)
-    stop1();
-  }, 5000);
-});
-
-// ---------------------------------------------------------------------------
-// 5. Edge cases
-// ---------------------------------------------------------------------------
-
-describe('Edge cases', () => {
-  it('handles empty DLQ store gracefully', async () => {
-    const store = new InMemoryDlqStore();
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    const ageGauge = _getDlqOldestAgeGauge();
-
-    // No providers should have gauges set
-    const depthMetrics = await depthGauge.get();
-    const ageMetrics = await ageGauge.get();
-
-    expect(depthMetrics.values).toHaveLength(0);
-    expect(ageMetrics.values).toHaveLength(0);
-  });
-
-  it('handles provider IDs with special characters', async () => {
-    const store = new InMemoryDlqStore();
-    store.push(makeDlqEntry('provider@123!xyz', 10));
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    const sanitized = sanitizeProvider('provider@123!xyz');
-    expect(await getGaugeValue(depthGauge, sanitized)).toBe(1);
-  });
-
-  it('handles very old entries (age > 1 day)', async () => {
-    const store = new InMemoryDlqStore();
-    const oneDaySeconds = 86400;
-    store.push(makeDlqEntry('acme', oneDaySeconds));
-
-    updateDlqMetrics(store);
-
-    const ageGauge = _getDlqOldestAgeGauge();
-    const age = await getGaugeValue(ageGauge, 'acme');
-
-    expect(age).toBeGreaterThanOrEqual(oneDaySeconds - 1);
-    expect(age).toBeLessThanOrEqual(oneDaySeconds + 1);
-  });
-
-  it('handles large DLQ depth (1000+ entries)', async () => {
-    const store = new InMemoryDlqStore();
-    const COUNT = 1000;
-
-    for (let i = 0; i < COUNT; i++) {
-      store.push(makeDlqEntry('acme', 10, `evt-${i}`));
-    }
-
-    updateDlqMetrics(store);
-
-    const depthGauge = _getDlqDepthGauge();
-    expect(await getGaugeValue(depthGauge, 'acme')).toBe(COUNT);
-  });
-
-  it('handles concurrent updates from multiple providers', async () => {
-    const store = new InMemoryDlqStore();
-    const providers = Array.from({ length: 10 }, (_, i) => `provider-${i}`);
-
-    // Add entries for all providers
-    providers.forEach((p) => {
-      store.push(makeDlqEntry(p, 10));
+describe('WebhookDeliveryService', () => {
+  describe('successful delivery', () => {
+    it('increments success counter and records latency', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 200 });
+
+      const result = await service.deliver(basePayload, httpClient);
+
+      expect(result.success).toBe(true);
+      expect(result.statusCode).toBe(200);
+      expect(result.durationSeconds).toBeGreaterThanOrEqual(0);
+
+      const count = await getCounterValue(registry, {
+        status: 'success',
+        provider: 'stripe',
+        reason: 'unknown',
+      });
+      expect(count).toBe(1);
+
+      const histCount = await getHistogramSampleCount(registry, {
+        status: 'success',
+        provider: 'stripe',
+      });
+      expect(histCount).toBe(1);
     });
 
-    updateDlqMetrics(store);
+    it('increments counter again on a second successful call', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 200 });
 
-    const depthGauge = _getDlqDepthGauge();
+      await service.deliver(basePayload, httpClient);
+      await service.deliver(basePayload, httpClient);
 
-    // All providers should have depth=1
-    for (const p of providers) {
-      expect(await getGaugeValue(depthGauge, p)).toBe(1);
-    }
+      const count = await getCounterValue(registry, {
+        status: 'success',
+        provider: 'stripe',
+        reason: 'unknown',
+      });
+      expect(count).toBe(2);
+    });
+  });
+
+  describe('failure scenarios', () => {
+    it('records 5xx_server_error on HTTP 500', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 500 });
+
+      const result = await service.deliver(basePayload, httpClient);
+
+      expect(result.success).toBe(false);
+      const count = await getCounterValue(registry, {
+        status: 'failure',
+        provider: 'stripe',
+        reason: '5xx_server_error',
+      });
+      expect(count).toBe(1);
+    });
+
+    it('records 4xx_client_error on HTTP 404', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 404 });
+
+      const result = await service.deliver(basePayload, httpClient);
+
+      expect(result.success).toBe(false);
+      const count = await getCounterValue(registry, {
+        status: 'failure',
+        provider: 'stripe',
+        reason: '4xx_client_error',
+      });
+      expect(count).toBe(1);
+    });
+
+    it('records timeout on ETIMEDOUT network error', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const err = Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+      const httpClient = jest.fn().mockRejectedValue(err);
+
+      const result = await service.deliver(basePayload, httpClient);
+
+      expect(result.success).toBe(false);
+      expect(result.statusCode).toBeUndefined();
+      const count = await getCounterValue(registry, {
+        status: 'failure',
+        provider: 'stripe',
+        reason: 'timeout',
+      });
+      expect(count).toBe(1);
+    });
+
+    it('records dns_resolution_failure on ENOTFOUND', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const err = Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+      const httpClient = jest.fn().mockRejectedValue(err);
+
+      await service.deliver(basePayload, httpClient);
+
+      const count = await getCounterValue(registry, {
+        status: 'failure',
+        provider: 'stripe',
+        reason: 'dns_resolution_failure',
+      });
+      expect(count).toBe(1);
+    });
+
+    it('records connection_refused on ECONNREFUSED', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const err = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      const httpClient = jest.fn().mockRejectedValue(err);
+
+      await service.deliver(basePayload, httpClient);
+
+      const count = await getCounterValue(registry, {
+        status: 'failure',
+        provider: 'stripe',
+        reason: 'connection_refused',
+      });
+      expect(count).toBe(1);
+    });
+  });
+
+  describe('cardinality safety', () => {
+    it('maps unknown providers to "generic"', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 200 });
+
+      await service.deliver({ ...basePayload, provider: 'some-random-provider-xyz' }, httpClient);
+
+      const count = await getCounterValue(registry, {
+        status: 'success',
+        provider: 'generic',
+        reason: 'unknown',
+      });
+      expect(count).toBe(1);
+    });
+
+    it('does not create a label entry for an arbitrary provider name', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 200 });
+
+      await service.deliver({ ...basePayload, provider: 'webhook-id-abc123' }, httpClient);
+
+      // The raw provider name must NOT appear in the metrics output
+      const raw = await registry.metrics();
+      expect(raw).not.toContain('webhook-id-abc123');
+    });
+  });
+
+  describe('latency histogram', () => {
+    it('records one observation per delivery call', async () => {
+      const registry = makeRegistry();
+      const service = makeService(registry);
+      const httpClient = jest.fn().mockResolvedValue({ statusCode: 200 });
+
+      await service.deliver(basePayload, httpClient);
+      await service.deliver(basePayload, httpClient);
+      await service.deliver({ ...basePayload, provider: 'github' }, httpClient);
+
+      const stripeCount = await getHistogramSampleCount(registry, {
+        status: 'success',
+        provider: 'stripe',
+      });
+      expect(stripeCount).toBe(2);
+
+      const githubCount = await getHistogramSampleCount(registry, {
+        status: 'success',
+        provider: 'github',
+      });
+      expect(githubCount).toBe(1);
+    });
   });
 });

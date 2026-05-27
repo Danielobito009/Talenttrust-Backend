@@ -1,71 +1,57 @@
-/**
- * @module events/types
- *
- * Type definitions for event ingestion and idempotency.
- */
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
 
-/**
- * Incoming event payload from external providers.
- */
-export interface IncomingEvent {
-  /** Opaque provider identifier. Must NOT contain secrets. */
-  providerId: string;
-  /** Event type (e.g., "contract.signed", "payment.completed"). */
-  eventType: string;
-  /** Globally unique event identifier from the provider. */
+export interface EventEnvelope<TPayload extends JsonValue = JsonValue> {
+  id: string;
+  type: string;
+  payload: TPayload;
+}
+
+export interface IdempotentEventResult<TResult> {
+  result: TResult;
+  replayed: boolean;
+  payloadHash: string;
+}
+
+export interface ContractEvent {
+  contractId: string;
   eventId: string;
-  /** Event timestamp (ms since epoch). */
+  sequence: number;
   timestamp: number;
-  /** Arbitrary JSON-serializable event payload. */
-  payload: unknown;
-  /** Optional HMAC signature for verification. */
+  payload: Record<string, any>;
   signature?: string;
 }
 
-/**
- * Response returned after processing an event.
- */
-export interface EventResponse {
-  /** HTTP-like status code (200 = success, 409 = duplicate, etc.). */
-  status: number;
-  /** Human-readable message. */
-  message: string;
-  /** Optional response data. */
-  data?: unknown;
+export interface EventIngestionResult {
+  deduplicationKey: string;
+  status: 'accepted' | 'rejected' | 'duplicate';
+  reason?: string;
+  processedAt: Date;
+  statusCode?: number;
+  code?: string;
 }
 
-/**
- * Idempotency store entry.
- */
-export interface IdempotencyEntry {
-  /** Computed idempotency key (HMAC-SHA256 hash). */
-  idempotencyKey: string;
-  /** Provider ID (sanitized for storage). */
-  providerId: string;
-  /** Event type. */
-  eventType: string;
-  /** Event ID from provider. */
+export interface EventProcessingAudit {
+  id: string;
+  deduplicationKey: string;
+  contractId: string;
   eventId: string;
-  /** Serialized response body (JSON string). */
-  responseBody: string;
-  /** Timestamp (ms) when the entry was created. */
-  createdAt: number;
-  /** Timestamp (ms) when the entry expires. */
-  expiresAt: number;
+  sequence: number;
+  status: 'accepted' | 'rejected' | 'duplicate';
+  reason?: string;
+  payloadHash: string;
+  processedAt: Date;
+  createdAt: Date;
 }
 
-/**
- * Configuration for idempotency behavior.
- */
-export interface IdempotencyConfig {
-  /** TTL for idempotency entries in milliseconds (default: 24 hours). */
-  ttlMs: number;
-  /** Grace period for TTL checks in milliseconds (default: 60 seconds). */
-  gracePeriodMs: number;
-  /** Maximum retry attempts for SQLITE_BUSY errors (default: 3). */
-  maxRetries: number;
-  /** Initial retry delay in milliseconds (default: 10ms). */
-  retryDelayMs: number;
-  /** Timestamp window for idempotency key computation in milliseconds (default: 5 minutes). */
-  timestampWindowMs: number;
+export interface EventValidationError {
+  field: string;
+  message: string;
+  value: any;
+}
+
+export interface ValidationResult {
+  isValid: boolean;
+  errors: EventValidationError[];
 }

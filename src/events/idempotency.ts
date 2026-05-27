@@ -1,201 +1,122 @@
-/**
- * @module events/idempotency
- *
- * Event ingestion idempotency layer with robust concurrency handling.
- *
- * ## Guarantees
- * - **Exactly-once execution:** Only one concurrent request executes the side effect.
- * - **Deterministic deduplication:** N-1 concurrent duplicates receive the same response.
- * - **No lock errors:** SQLITE_BUSY errors are retried transparently.
- * - **TTL safety:** Handles race conditions during TTL expiration and purge operations.
- *
- * ## Usage
- * ```typescript
- * const processor = new EventProcessor(store);
- * const response = await processor.processEvent(event, async (evt) => {
- *   // Side effect (e.g., write to database, send webhook)
- *   return { status: 200, message: 'ok' };
- * });
- * ```
- */
+import { createHash, timingSafeEqual } from 'crypto';
+import { defaultIdempotencyStore, IdempotencyStore } from '../db/idempotencyStore';
+import { redact, redactPayloadForLog } from './redact';
+import { IdempotentEventResult, JsonValue } from './types';
 
-import type { IncomingEvent, EventResponse, IdempotencyConfig } from './types';
-import { IdempotencyStore, computeIdempotencyKey } from './idempotencyStore';
+export class IdempotencyConflictError extends Error {
+  readonly statusCode = 409;
+  readonly code = 'IDEMPOTENCY_PAYLOAD_CONFLICT';
 
-// ---------------------------------------------------------------------------
-// EventProcessor
-// ---------------------------------------------------------------------------
+  constructor(readonly idempotencyKey: string) {
+    super('Idempotency key was already used with a different event payload.');
+    this.name = 'IdempotencyConflictError';
+  }
+}
+
+type Logger = Pick<Console, 'warn'>;
+
+interface RunOptions {
+  store?: IdempotencyStore;
+  logger?: Logger;
+}
 
 /**
- * Event processor with idempotency guarantees.
+ * Computes a stable SHA-256 hash for a JSON event payload.
  *
- * Ensures that concurrent duplicate events execute the side effect exactly once,
- * while all other requests receive the deduplicated response.
+ * @param payload - JSON-compatible event payload to fingerprint.
+ * @returns Hex-encoded SHA-256 digest of the canonical payload.
  */
-export class EventProcessor {
-  private readonly store: IdempotencyStore;
-  private readonly config: IdempotencyConfig;
+export function hashEventPayload(payload: JsonValue): string {
+  return createHash('sha256').update(canonicalize(payload)).digest('hex');
+}
 
-  /**
-   * @param store - Idempotency store instance.
-   * @param config - Optional configuration (defaults to env vars).
-   */
-  constructor(store: IdempotencyStore, config?: IdempotencyConfig) {
-    this.store = store;
-    this.config = config ?? {
-      ttlMs: 24 * 60 * 60 * 1_000,
-      gracePeriodMs: 60 * 1_000,
-      maxRetries: 3,
-      retryDelayMs: 10,
-      timestampWindowMs: 5 * 60 * 1_000,
-    };
+/**
+ * Executes event work once per idempotency key and rejects conflicting replays.
+ *
+ * @param key - Client or upstream supplied idempotency key.
+ * @param payload - Event payload used to bind the key to a stable hash.
+ * @param handler - Work to run on the first write path.
+ * @param options - Optional store and logger overrides for tests or adapters.
+ * @returns The handler result, replay flag, and payload hash.
+ *
+ * @throws IdempotencyConflictError when a reused key has a different payload
+ * hash. The error is safe to translate to HTTP 409 Conflict.
+ */
+export async function runIdempotentEvent<TResult>(
+  key: string,
+  payload: JsonValue,
+  handler: () => TResult | Promise<TResult>,
+  options: RunOptions = {},
+): Promise<IdempotentEventResult<TResult>> {
+  const normalizedKey = key.trim();
+
+  if (normalizedKey.length === 0) {
+    throw new TypeError('Idempotency key is required.');
   }
 
-  // -------------------------------------------------------------------------
-  // Public API
-  // -------------------------------------------------------------------------
+  const store = options.store ?? defaultIdempotencyStore;
+  const payloadHash = hashEventPayload(payload);
+  const existing = store.get<TResult>(normalizedKey);
 
-  /**
-   * Process an incoming event with idempotency guarantees.
-   *
-   * ## Concurrency Behavior
-   * 1. Compute idempotency key from event.
-   * 2. Check for existing entry (read-only, no lock).
-   * 3. If found and not expired, return cached response (deduplicated).
-   * 4. Attempt atomic insert with `INSERT OR IGNORE`.
-   * 5. If insert succeeds (changes > 0), execute side effect and store response.
-   * 6. If insert fails (changes = 0), another request won the race — fetch their response.
-   *
-   * ## Error Handling
-   * - SQLITE_BUSY errors are retried with exponential backoff (transparent to caller).
-   * - Side effect errors are propagated to the caller (not cached).
-   *
-   * @param event - Incoming event to process.
-   * @param sideEffect - Async function that executes the business logic.
-   * @returns The event response (either fresh or deduplicated).
-   */
-  public async processEvent(
-    event: IncomingEvent,
-    sideEffect: (event: IncomingEvent) => Promise<EventResponse>,
-  ): Promise<EventResponse> {
-    const idempotencyKey = computeIdempotencyKey(event, this.config);
-
-    // Phase 1: Check for existing entry (read-only, no lock)
-    const existing = this.store.get(idempotencyKey);
-    if (existing) {
-      console.log(
-        `[idempotency] Cache HIT for key=${redactKey(idempotencyKey)}, ` +
-          `provider=${sanitizeProviderId(event.providerId)}, eventType=${event.eventType}`,
-      );
-      return JSON.parse(existing.responseBody) as EventResponse;
+  if (existing) {
+    if (constantTimeEqual(existing.payloadHash, payloadHash)) {
+      return {
+        result: existing.result,
+        replayed: true,
+        payloadHash,
+      };
     }
 
-    // Phase 2: Attempt atomic insert (with retry on SQLITE_BUSY)
-    const nowMs = Date.now();
-    const expiresAt = nowMs + this.config.ttlMs;
-
-    const inserted = this.store.insert({
-      idempotencyKey,
-      providerId: event.providerId,
-      eventType: event.eventType,
-      eventId: event.eventId,
-      responseBody: JSON.stringify({ status: 202, message: 'processing' }), // Placeholder
-      createdAt: nowMs,
-      expiresAt,
-    });
-
-    if (!inserted) {
-      // Another concurrent request won the race — fetch their result
-      console.log(
-        `[idempotency] Lost race for key=${redactKey(idempotencyKey)}, ` +
-          `provider=${sanitizeProviderId(event.providerId)}, eventType=${event.eventType}`,
-      );
-
-      // Wait a short time for the winner to complete their side effect
-      await this.sleep(50);
-
-      const winner = this.store.get(idempotencyKey);
-      if (winner) {
-        return JSON.parse(winner.responseBody) as EventResponse;
-      }
-
-      // Winner's entry was purged or expired — treat as new event
-      console.warn(
-        `[idempotency] Winner's entry vanished for key=${redactKey(idempotencyKey)} — treating as new event`,
-      );
-      return this.processEvent(event, sideEffect); // Recursive retry
-    }
-
-    // Phase 3: We won the race — execute the side effect
-    console.log(
-      `[idempotency] Cache MISS for key=${redactKey(idempotencyKey)}, ` +
-        `provider=${sanitizeProviderId(event.providerId)}, eventType=${event.eventType} — executing side effect`,
+    options.logger?.warn(
+      'Rejected conflicting event idempotency replay',
+      redact({
+        idempotencyKey: normalizedKey,
+        storedPayloadHash: existing.payloadHash,
+        receivedPayloadHash: payloadHash,
+        receivedPayload: redactPayloadForLog(payload),
+      }),
     );
 
-    try {
-      const response = await sideEffect(event);
-
-      // Store the response
-      this.store.updateResponse(idempotencyKey, JSON.stringify(response));
-
-      return response;
-    } catch (err) {
-      // Side effect failed — do NOT cache the error
-      // Delete the placeholder entry so retries can re-execute
-      console.error(
-        `[idempotency] Side effect failed for key=${redactKey(idempotencyKey)}: ${err}`,
-      );
-
-      // Note: We don't delete the entry here to avoid race conditions.
-      // The entry will expire naturally via TTL.
-      throw err;
-    }
+    throw new IdempotencyConflictError(normalizedKey);
   }
 
-  // -------------------------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------------------------
+  const result = await handler();
 
-  /**
-   * Async sleep (non-blocking).
-   *
-   * @param ms - Milliseconds to sleep.
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
+  store.set({
+    key: normalizedKey,
+    payloadHash,
+    result,
+    createdAt: new Date(),
+  });
+
+  return {
+    result,
+    replayed: false,
+    payloadHash,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Security helpers
-// ---------------------------------------------------------------------------
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
 
-/**
- * Redact an idempotency key for safe log output.
- *
- * Shows only the first 8 characters followed by `****`.
- *
- * @param key - Raw idempotency key (64-char hex string).
- * @returns Redacted string safe for log output.
- */
-export function redactKey(key: string): string {
-  if (key.length <= 8) {
-    return '****';
+  if (leftBuffer.length !== rightBuffer.length) {
+    timingSafeEqual(leftBuffer, leftBuffer);
+    return false;
   }
-  return `${key.slice(0, 8)}****`;
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-/**
- * Sanitize a provider ID for safe log output.
- *
- * Shows only the first 4 characters followed by `****`.
- *
- * @param providerId - Raw provider identifier.
- * @returns Sanitized string safe for log output.
- */
-export function sanitizeProviderId(providerId: string): string {
-  if (providerId.length <= 4) {
-    return '****';
+function canonicalize(value: JsonValue): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
   }
-  return `${providerId.slice(0, 4)}****`;
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalize(item)).join(',')}]`;
+  }
+
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`).join(',')}}`;
 }

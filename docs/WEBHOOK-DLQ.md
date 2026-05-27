@@ -1,247 +1,219 @@
-# Webhook Dead Letter Queue (DLQ) Metrics
+# Webhook DLQ (Dead Letter Queue)
+
+This document describes the webhook DLQ persistence implementation and the
+graceful-shutdown drain phase that prevents avoidable DLQ entries during
+blue/green deployment switches.
+
+---
 
 ## Overview
 
-The webhook delivery system tracks failed deliveries in a Dead Letter Queue (DLQ). Two Prometheus gauges provide real-time visibility into DLQ health, enabling operators to set up alerts for growing backlogs and stale entries.
+Failed webhook deliveries are persisted to durable SQLite storage for later
+inspection and replay.  The drain phase ensures that in-flight deliveries are
+given a chance to complete naturally before the process exits; only deliveries
+that cannot finish within the grace window are force-flushed to the DLQ.
 
 ---
 
-## Metrics
+## Components
 
-### `webhook_dlq_depth`
+### Storage (`src/queue/webhook-dlq.ts`)
 
-**Type:** Gauge  
-**Labels:** `provider`  
-**Description:** Current number of items in the webhook DLQ per provider.
+- SQLite-backed persistent storage
+- Deduplication via SHA-256 hash key (`webhookId` + payload)
+- Unique constraint prevents duplicate entries
+- `webhookSecret` is **never** returned in API responses or stored in plain text
 
-**Semantics:**
-- Increments when a webhook delivery fails after all retries and is pushed to the DLQ.
-- Decrements when an entry is drained (manually retried or discarded).
-- Resets to exactly `0` when a provider's DLQ is empty.
+### Retry Policy (`src/queue/webhook-retry-policy.ts`)
 
-**Example:**
-```
-webhook_dlq_depth{provider="acme"} 42
-webhook_dlq_depth{provider="partnerx"} 0
-```
+- Max 5 retry attempts
+- Exponential backoff: 1 s → 2 s → 4 s → 8 s → 16 s
+- 10 % jitter to prevent thundering herd
+- Max delay cap: 30 s
 
----
+### Admin Endpoints (`src/routes/admin.routes.ts`)
 
-### `webhook_dlq_oldest_age_seconds`
-
-**Type:** Gauge  
-**Labels:** `provider`  
-**Description:** Age in seconds of the oldest entry in the webhook DLQ per provider.
-
-**Semantics:**
-- Tracks the age (wall-clock time since entry was added) of the oldest entry in each provider's DLQ.
-- Increases continuously as entries age.
-- Resets to `0` (or is omitted) when a provider's DLQ is empty.
-
-**Example:**
-```
-webhook_dlq_oldest_age_seconds{provider="acme"} 3600
-webhook_dlq_oldest_age_seconds{provider="partnerx"} 0
-```
+| Method | Endpoint                              | Description        |
+|--------|---------------------------------------|--------------------|
+| GET    | /api/v1/admin/webhook-dlq             | List DLQ entries   |
+| GET    | /api/v1/admin/webhook-dlq/:id         | Get single entry   |
+| POST   | /api/v1/admin/webhook-dlq/:id/replay  | Replay webhook     |
 
 ---
 
-## Label Sanitization
+## Graceful-Shutdown Drain Phase
 
-Provider IDs are sanitized before use as Prometheus label values to prevent label cardinality explosion:
+### Why it exists
 
-- Converted to lowercase
-- Non-alphanumeric characters (except `-` and `_`) replaced with `_`
-- Truncated to 32 characters max
+Without a drain phase, a SIGTERM during a blue/green switch can interrupt
+in-flight HTTP calls to webhook endpoints mid-flight.  The delivery is then
+counted as a failure and written to the DLQ even though the remote server may
+have already received the payload — causing spurious DLQ entries and potential
+duplicate deliveries on replay.
 
-**Example:**
-```
-Provider ID: "Provider@123!XYZ"
-Sanitized:   "provider_123_xyz"
-```
-
-**Security Note:** Provider IDs are assumed to be opaque identifiers (not secrets). Secrets are never included in metric labels or DLQ entries.
-
----
-
-## Sampling Interval
-
-DLQ metrics are updated on a **bounded interval** (not on every DLQ operation) to avoid blocking the Node.js event loop.
-
-### Configuration
-
-| Environment Variable       | Default | Description                                    |
-|----------------------------|---------|------------------------------------------------|
-| `DLQ_METRICS_INTERVAL_MS`  | `30000` | DLQ metrics sampling interval in milliseconds. |
-
-**Recommended values:**
-- **Development:** `10000` (10 seconds) for faster feedback.
-- **Production:** `30000` (30 seconds) balances freshness and overhead.
-- **High-volume:** `60000` (60 seconds) reduces CPU usage.
-
-### Example `.env`
+### Lifecycle
 
 ```
-DLQ_METRICS_INTERVAL_MS=30000
+SIGTERM received
+      │
+      ▼
+1. HTTP server.close()          ← no new requests accepted from the network
+      │
+      ▼
+2. webhookService.stopAccepting() ← gate closed; no new deliveries start
+      │
+      ├─ inFlightCount == 0 ──► log webhook_deliveries_drained, continue
+      │
+      └─ inFlightCount > 0
+            │
+            ├─ drain() resolves within WEBHOOK_DRAIN_TIMEOUT_MS
+            │       └─► log webhook_deliveries_drained, continue
+            │
+            └─ timeout expires
+                    ├─► log webhook_drain_timeout
+                    ├─► flushToDLQ()   ← remaining deliveries written to DLQ
+                    └─► log webhook_drain_flushed_to_dlq, continue
+      │
+      ▼
+3. BullMQ workers close (force=false)
+      │
+      ▼
+4. Downstream connections close (Redis, Postgres, …)
+      │
+      ▼
+5. process.exit(0)
 ```
 
----
+### Blue/green interaction
 
-## Recommended Alert Thresholds
+`deploy:switch-green` updates the router **before** sending SIGTERM to the old
+color.  This means the old instance stops receiving new traffic before the drain
+phase starts, so most in-flight deliveries will already be complete by the time
+the grace timeout begins.  The timeout is therefore a safety net for the rare
+case where a delivery is still in-flight at the moment the router switches.
 
-### Alert: DLQ Backlog Growing
+### Implementing `DrainableWebhookService`
 
-**Condition:** `webhook_dlq_depth > 100` for 5 minutes  
-**Severity:** Warning  
-**Action:** Investigate why deliveries are failing. Check target endpoint health, network connectivity, and rate limits.
+Any service passed to `registerShutdownHandlers` via `options.webhookService`
+must satisfy the `DrainableWebhookService` interface exported from
+`src/shutdown.ts`:
 
-**PromQL:**
-```promql
-webhook_dlq_depth > 100
-```
+```ts
+import { DrainableWebhookService } from './shutdown';
 
----
+class WebhookDeliveryService implements DrainableWebhookService {
+  private _inFlight = 0;
+  private _accepting = true;
 
-### Alert: DLQ Entries Stale
+  get inFlightCount(): number {
+    return this._inFlight;
+  }
 
-**Condition:** `webhook_dlq_oldest_age_seconds > 3600` (1 hour)  
-**Severity:** Warning  
-**Action:** Manually retry or discard stale entries. Investigate root cause of delivery failures.
+  /** Idempotent gate — call on SIGTERM before waiting. */
+  stopAccepting(): void {
+    this._accepting = false;
+  }
 
-**PromQL:**
-```promql
-webhook_dlq_oldest_age_seconds > 3600
-```
+  /** Resolves when all in-flight deliveries have settled. */
+  async drain(): Promise<void> {
+    // Wait until _inFlight reaches 0, e.g. via a Promise that resolves
+    // when the last in-flight counter decrements to zero.
+  }
 
----
-
-### Alert: DLQ Backlog Critical
-
-**Condition:** `webhook_dlq_depth > 1000` for 10 minutes  
-**Severity:** Critical  
-**Action:** Immediate intervention required. Deliveries are failing at scale. Check for:
-- Target endpoint outages
-- Network partitions
-- Rate limit exhaustion
-- Misconfigured signing secrets
-
-**PromQL:**
-```promql
-webhook_dlq_depth > 1000
-```
-
----
-
-## Scrape Configuration
-
-Add the following to your Prometheus `prometheus.yml`:
-
-```yaml
-scrape_configs:
-  - job_name: 'talenttrust-webhooks'
-    static_configs:
-      - targets: ['localhost:3001']
-    scrape_interval: 15s
-    metrics_path: /metrics
-```
-
-**Note:** Ensure your Express app exposes a `/metrics` endpoint that calls `register.metrics()` from `prom-client`.
-
----
-
-## Architecture
-
-### DLQ Store
-
-The DLQ is backed by an in-memory store (`InMemoryDlqStore`) suitable for single-process deployments. For production multi-process or persistent storage, replace with a Redis-backed or database-backed implementation that implements the `DlqStore` interface.
-
-**Interface:**
-```typescript
-interface DlqStore {
-  push(entry: DlqEntry): void;
-  getDepthByProvider(): Map<string, number>;
-  getOldestAgeByProvider(): Map<string, number>;
-  drain(providerId: string, count: number): DlqEntry[];
-  clear(): void;
+  /**
+   * Force-moves every remaining in-flight delivery to the DLQ.
+   * Must be idempotent.  Must NOT include raw webhookSecret in the payload.
+   */
+  async flushToDLQ(): Promise<void> {
+    // Cancel pending HTTP calls and write each to WebhookDLQStorage.
+  }
 }
 ```
 
-### Metrics Sampling
-
-The `startDlqMetricsSampling(dlqStore, intervalMs)` function starts a `setInterval` loop that:
-1. Calls `dlqStore.getDepthByProvider()` and `dlqStore.getOldestAgeByProvider()`.
-2. Updates the Prometheus gauges for each provider.
-3. Resets gauges to `0` for providers with empty queues.
-
-All operations are **synchronous** (non-blocking) to avoid event-loop stalls.
-
 ---
 
-## Security Notes
+## Capacity Management
 
-1. **No secrets in labels.** Provider IDs are sanitized and assumed to be opaque identifiers. Signing secrets are never included in DLQ entries or metric labels.
+### Overflow Policy: Oldest-Evict
 
-2. **Payload redaction.** DLQ entries may contain sensitive payload data. If persisting to disk or database, encrypt payloads at rest.
+When the DLQ reaches its maximum capacity (default: 10,000 entries), the system automatically evicts the oldest pending entry to make room for new failures.
 
-3. **Access control.** The `/metrics` endpoint exposes DLQ depth and age per provider. Ensure this endpoint is protected (e.g., internal network only, or behind authentication).
+**Behavior:**
+- Default max capacity: 10,000 entries
+- When at capacity, the oldest pending (not-yet-replayed) entry is evicted
+- Replayed entries are not evicted (they are kept for historical reference)
+- The eviction occurs before the new entry is added
 
-4. **Label cardinality.** The `sanitizeProvider` function prevents unbounded label cardinality by truncating and normalizing provider IDs. Do not bypass this function.
+**Rationale:**
+- Ensures the DLQ doesn't grow unbounded
+- Prioritizes newer failures which may be more actionable
+- Replayed entries are preserved for audit and historical tracking
 
----
+**Configuration:**
+```typescript
+const storage = new WebhookDLQStorage(':memory:', { 
+  maxCapacity: 10000  // configurable
+});
+```
 
-## Troubleshooting
+### Environment
 
-### Gauges not updating
+| Variable | Description | Default |
+|----------|-------------|---------|
+| WEBHOOK_DLQ_PATH | SQLite DB path | `./data/webhook-dlq.db` |
 
-**Symptom:** `webhook_dlq_depth` and `webhook_dlq_oldest_age_seconds` are stale or missing.
+## Poison Message Handling
 
-**Possible causes:**
-- `initializeJobs()` was not called at application startup.
-- `DLQ_METRICS_INTERVAL_MS` is set too high (e.g., 10 minutes).
-- The DLQ store is empty (no failed deliveries).
+A poison message is a webhook that consistently fails on every replay attempt, typically due to malformed data or an unrecoverable downstream issue.
 
-**Solution:**
-- Verify `initializeJobs()` is called in `src/index.ts`.
-- Check logs for `[api/jobs] DLQ metrics sampling started`.
-- Lower `DLQ_METRICS_INTERVAL_MS` for faster updates.
+### Behavior
 
----
+- Default max replay attempts: 5
+- Each failed replay increments the `replay_attempts` counter
+- When `replay_attempts >= maxReplayAttempts`, the message is **permanently dropped**
+- The entry is deleted from the database and cannot be recovered
 
-### Gauges not resetting to zero
+**Rationale:**
+- Prevents infinite retry loops
+- Prevents DLQ pollution with unrecoverable messages
+- Limits resource consumption on repeated failed attempts
 
-**Symptom:** `webhook_dlq_depth` shows a non-zero value even after draining all entries.
+**Configuration:**
+```typescript
+const storage = new WebhookDLQStorage(':memory:', { 
+  maxReplayAttempts: 5  // configurable
+});
+```
 
-**Possible causes:**
-- The DLQ store's `drain()` method is not removing entries correctly.
-- The metrics sampling loop has not run since the drain operation.
+### Tracking
 
-**Solution:**
-- Manually call `updateDlqMetrics(dlqStore)` to force an immediate update.
-- Wait for the next sampling interval (default 30 seconds).
-- Check the DLQ store implementation for bugs.
+The `WebhookDLQEntry` includes a `replayAttempts` field that tracks how many times an entry has been replayed:
 
----
+```typescript
+interface WebhookDLQEntry {
+  // ... other fields
+  replayAttempts: number;
+}
+```
 
-### High cardinality warning
+## Metrics
 
-**Symptom:** Prometheus logs a warning about high label cardinality for `webhook_dlq_depth` or `webhook_dlq_oldest_age_seconds`.
+DLQ operations are tracked via Prometheus counters in `webhookMetrics.ts`:
 
-**Possible causes:**
-- Provider IDs are not being sanitized (bypassing `sanitizeProvider`).
-- A large number of unique providers (100+) are using the system.
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `webhook_dlq_operations_total` | `operation` | Total DLQ operations |
 
-**Solution:**
-- Verify all provider IDs pass through `sanitizeProvider` before use as labels.
-- Consider aggregating metrics by provider tier (e.g., `tier="premium"`) instead of individual provider IDs.
+**Operations tracked:**
 
----
+| Operation | Description |
+|-----------|-------------|
+| `enqueue` | Entry added to DLQ |
+| `drop_overflow` | Entry evicted due to capacity overflow |
+| `drop_poison` | Entry dropped after exceeding max replay attempts |
 
-## File Map
+## Security
 
-| File | Purpose |
-|---|---|
-| `src/dlqStore.ts` | `DlqStore` interface and `InMemoryDlqStore` implementation |
-| `src/webhookMetrics.ts` | Prometheus gauges, `updateDlqMetrics`, `startDlqMetricsSampling`, `sanitizeProvider` |
-| `src/api/jobs.ts` | Background job initialization, DLQ metrics sampling bootstrap |
-| `src/webhookDelivery.test.ts` | Integration tests for DLQ metrics (population, drainage, sampling) |
-| `docs/WEBHOOK-DLQ.md` | This document |
+- All endpoints require admin JWT role
+- `webhookSecret` is never returned in API responses
+- Replay requires a reason (min 5 chars) for audit
