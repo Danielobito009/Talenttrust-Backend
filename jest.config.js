@@ -41,7 +41,7 @@ module.exports = {
     'src/routes/reputation.api.test.ts',
     'src/services/contracts.service.test.ts',
     'src/services/reputation.service.test.ts',
-    'src/shutdown.test.ts',
+    // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
     'src/utils/webhook-signing.util.test.ts',
   ],
   transform: {
