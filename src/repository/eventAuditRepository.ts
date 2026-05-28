@@ -89,7 +89,7 @@ export class EventAuditService {
     private logger: Logger = console,
   ) {}
 
-  async processEvent(event: any, contractType: string): Promise<EventIngestionResult> {
+  async processEvent(event: any, contractType: string, correlationId?: string): Promise<EventIngestionResult> {
     const deduplicationKey = DeduplicationManager.computeDeduplicationKey(event);
     const processedAt = new Date();
     const payloadHash = DeduplicationManager.computePayloadHash(event.payload);
@@ -137,7 +137,8 @@ export class EventAuditService {
       status: 'accepted',
       payloadHash,
       processedAt,
-      createdAt: new Date()
+      createdAt: new Date(),
+      ...(correlationId && { correlationId })
     };
 
     await this.repository.save(audit);
@@ -149,7 +150,7 @@ export class EventAuditService {
     };
   }
 
-  async rejectEvent(event: any, reason: string): Promise<EventIngestionResult> {
+  async rejectEvent(event: any, reason: string, correlationId?: string): Promise<EventIngestionResult> {
     const deduplicationKey = DeduplicationManager.computeDeduplicationKey(event);
     const processedAt = new Date();
 
@@ -163,7 +164,8 @@ export class EventAuditService {
       reason,
       payloadHash: DeduplicationManager.computePayloadHash(event.payload),
       processedAt,
-      createdAt: new Date()
+      createdAt: new Date(),
+      ...(correlationId && { correlationId })
     };
 
     await this.repository.save(audit);

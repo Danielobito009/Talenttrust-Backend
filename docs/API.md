@@ -10,6 +10,63 @@ The TalentTrust Backend API provides RESTful endpoints for managing escrow contr
 http://localhost:3001/api/v1
 ```
 
+## Request Headers
+
+### Standard Request Headers
+
+All requests support the following standard headers for request tracing and correlation:
+
+#### X-Request-Id
+
+Unique identifier for each HTTP request. If provided, the server will echo back the same value in the response; otherwise, a new UUID v4 is generated server-side.
+
+- **Type:** String (UUID v4 or alphanumeric+hyphen/underscore, max 128 chars)
+- **Required:** No
+- **Example:** `X-Request-Id: 550e8400-e29b-41d4-a716-446655440000`
+
+#### X-Correlation-Id
+
+Optional correlation ID for distributed tracing across service boundaries. Enables tracking a single logical operation through multiple services and components (e.g., from API ingress through event processing to outbound webhook deliveries).
+
+- **Type:** String (alphanumeric+hyphen/underscore, max 128 chars)
+- **Required:** No
+- **Format:** Alphanumeric characters, hyphens, and underscores only
+- **Example:** `X-Correlation-Id: trace-12345-abc`
+
+**Security Note:** The correlation ID is validated for injection attacks. Only safe characters are accepted; invalid IDs are rejected and not echoed back in the response.
+
+### Propagation Through the System
+
+When a request includes `X-Correlation-Id`:
+1. The ID is validated and attached to the request-scoped logger context
+2. The ID is included in all event processing audit records (for deduplication and tracing)
+3. The ID is propagated to outbound webhook deliveries in the `X-Correlation-Id` header
+4. The ID is echoed back in the response header `X-Correlation-Id`
+
+This enables end-to-end tracing of a single logical operation across:
+- API request ingress
+- Event ingestion and processing
+- Webhook delivery attempts
+- All related log entries
+
+### Example: Distributed Tracing Flow
+
+```bash
+# 1. Client initiates request with correlation ID
+curl -X GET http://localhost:3001/api/v1/contracts \
+  -H "X-Correlation-Id: my-trace-id-001"
+
+# 2. Response includes both request ID and echoed correlation ID
+# Response Headers:
+# X-Request-Id: 550e8400-e29b-41d4-a716-446655440000
+# X-Correlation-Id: my-trace-id-001
+```
+
+The same `X-Correlation-Id` value will appear in:
+- Request-scoped logs
+- Event processing audit records
+- Webhook delivery attempt headers
+
 ## Authentication
 
 The API uses Bearer token authentication. Include the token in the Authorization header:

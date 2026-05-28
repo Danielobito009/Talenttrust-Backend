@@ -9,6 +9,8 @@ export interface WebhookPayload {
   data: unknown;
   retryCount: number;
   webhookSecret?: string;
+  /** Optional correlation ID for distributed tracing across webhook deliveries. */
+  correlationId?: string;
 }
 
 export class WebhookService {
@@ -28,6 +30,11 @@ export class WebhookService {
         
         headers['X-Signature'] = `sha256=${signature}`;
         headers['X-Timestamp'] = timestamp.toString();
+      }
+
+      // Propagate correlation ID for distributed tracing
+      if (payload.correlationId) {
+        headers['X-Correlation-Id'] = payload.correlationId;
       }
 
       await axios.post(payload.url, payload.data, { headers });
