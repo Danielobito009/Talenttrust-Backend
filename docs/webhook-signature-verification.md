@@ -355,6 +355,38 @@ When webhook delivery exhausts all retries:
 4. Each DLQ entry includes the original payload, provider, URL, and error context
 
 For details on DLQ operations, see [WEBHOOK-DLQ.md](./WEBHOOK-DLQ.md).
+
+## Backend verification API
+
+Inbound verification is implemented in `src/utils/webhook-signing.util.ts` and re-exported from `src/webhookDelivery.ts` for route handlers that already depend on the delivery module.
+
+| Function | Purpose |
+|----------|---------|
+| `verifyWebhookSignature(payload, signature, timestamp, secret, options?)` | Structured result with safe error codes/messages |
+| `verifySignature(...)` | Boolean convenience wrapper |
+| `normalizeSignatureHeader(signature)` | Strips `sha256=` and validates hex |
+| `constantTimeCompareHex(a, b)` | `crypto.timingSafeEqual` on decoded digests |
+
+Failure messages are passed through `src/errors/safeErrors.ts` so stack traces, file paths, and secrets never reach clients. Signature mismatch uses the `invalid_webhook_signature` code.
+
+### Adversarial / property tests
+
+CI runs a deterministic fuzz suite (`FUZZ_SEED = 0x277a11ce`, 400 iterations) in `src/webhookDelivery.signature.property.test.ts`. Generated inputs include:
+
+- Random and truncated hex digests
+- Wrong-length HMACs and `sha256=` prefix variants
+- Base64 and non-hex encodings
+- Expired timestamps and tampered payloads
+
+**Acceptance criteria:** zero forgeries accepted; no unhandled throws; constant-time comparison exercised via `crypto.timingSafeEqual`.
+
+Run locally:
+
+```bash
+npm test -- webhook-signing.util.test.ts webhookDelivery.signature.property.test.ts
+npm run test:ci -- --collectCoverageFrom='src/utils/webhook-signing.util.ts'
+```
+
 ## Testing
 
 You can test webhook signature verification using our utility functions:

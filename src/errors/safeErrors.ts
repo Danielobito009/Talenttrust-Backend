@@ -30,6 +30,7 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   bad_request: 'The request could not be processed',
   payload_too_large: 'Payload Too Large',
   unsupported_media_type: 'Unsupported Media Type',
+  invalid_webhook_signature: 'Webhook signature verification failed',
 };
 
 /**

@@ -350,3 +350,38 @@ export class WebhookDeliveryService {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Inbound webhook HMAC verification (re-exported for webhook route handlers)
+// ---------------------------------------------------------------------------
+
+/**
+ * @module webhookDelivery/signatureVerification
+ *
+ * Inbound webhook authenticity checks. Implementation lives in
+ * {@link ./utils/webhook-signing.util | webhook-signing.util}; symbols are
+ * re-exported here so consumers colocated with delivery/DLQ code import a
+ * single module.
+ *
+ * @security
+ * - Signatures are compared with `crypto.timingSafeEqual` on decoded digests.
+ * - Failure messages are sanitized via {@link ./errors/safeErrors | safeErrors}.
+ * - Secrets and raw signatures must never appear in logs or API responses.
+ */
+export {
+  WEBHOOK_SIGNATURE_HEX_LENGTH,
+  WEBHOOK_SIGNATURE_MAX_AGE_MS,
+  WEBHOOK_VERIFICATION_CODES,
+  constantTimeCompareHex,
+  createWebhookSignature,
+  generateSignature,
+  normalizeSignatureHeader,
+  verifySignature,
+  verifyWebhookSignature,
+} from './utils/webhook-signing.util';
+
+export type {
+  WebhookSignature,
+  WebhookVerificationCode,
+  WebhookVerificationResult,
+} from './utils/webhook-signing.util';
