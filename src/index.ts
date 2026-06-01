@@ -15,6 +15,7 @@ import { createAuditRouter } from './audit/router';
 import { createRateLimiter } from './middleware/rateLimiter';
 import { rateLimitConfig } from './config/rateLimit';
 import { requireAuth, requireRole } from './middleware/authorization';
+import { adminAuthGuard } from './middleware/adminAuthGuard';
 
 const queueManager = QueueManager.getInstance();
 
@@ -61,6 +62,114 @@ function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFuncti
 
   next();
 }
+
+app.get(
+  '/api/v1/jobs/dlq',
+  adminAuthGuard,
+  async (req: Request & { user?: { id: string } }, res: Response) => {
+    try {
+      const typeQuery = (req as any).query['type'];
+      const limitQuery = (req as any).query['limit'];
+      const offsetQuery = (req as any).query['offset'];
+
+      const jobType = typeof typeQuery === 'string' ? typeQuery : undefined;
+      if (jobType && !Object.values(JobType).includes(jobType as JobType)) {
+        return res.status(400).json({ error: `Invalid job type: ${jobType}` });
+      }
+
+      const limit = Math.min(
+        Math.max(parsePositiveInt(limitQuery, DLQ_DEFAULT_LIMIT), 1),
+        DLQ_MAX_LIMIT,
+      );
+      const offset = Math.max(parsePositiveInt(offsetQuery, 0), 0);
+
+      const entries = await queueManager.getFailedJobs({
+        jobType: jobType as JobType | undefined,
+        limit,
+        offset,
+      });
+
+      auditService.log({
+        action: 'ADMIN_ACTION',
+        severity: 'INFO',
+        actor: req.user!.id,
+        resource: 'jobs-dlq',
+        resourceId: jobType ?? 'all',
+        metadata: {
+          operation: 'view',
+          count: entries.length,
+          limit,
+          offset,
+        },
+        ipAddress: (req as any).ip,
+        correlationId: (req as any).headers['x-correlation-id'] as string | undefined,
+      });
+
+      return res.status(200).json({ entries, limit, offset, count: entries.length });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return res.status(500).json({ error: `Failed to get DLQ entries: ${message}` });
+    }
+  },
+);
+
+app.post(
+  '/api/v1/jobs/dlq/reprocess',
+  adminAuthGuard,
+  async (req: Request & { user?: { id: string } }, res: Response) => {
+    try {
+      const { type, jobId, reason } = (req as any).body as {
+        type?: string;
+        jobId?: string;
+        reason?: string;
+      };
+
+      if (!type || !jobId || !reason || typeof reason !== 'string' || reason.trim().length < 5) {
+        return res.status(400).json({
+          error: 'type, jobId, and reason (min 5 chars) are required',
+        });
+      }
+
+      if (!Object.values(JobType).includes(type as JobType)) {
+        return res.status(400).json({ error: `Invalid job type: ${type}` });
+      }
+
+      const replayResult = await queueManager.reprocessFailedJob(type as JobType, jobId);
+
+      auditService.log({
+        action: 'ADMIN_ACTION',
+        severity: 'WARNING',
+        actor: req.user!.id,
+        resource: 'jobs-dlq',
+        resourceId: jobId,
+        metadata: {
+          operation: 'reprocess',
+          reason: reason.trim(),
+          jobType: type,
+          replayJobId: replayResult.replayJobId,
+          deduplicated: replayResult.deduplicated,
+        },
+        ipAddress: (req as any).ip,
+        correlationId: (req as any).headers['x-correlation-id'] as string | undefined,
+      });
+
+      const statusCode = replayResult.deduplicated ? 200 : 202;
+      return res.status(statusCode).json(replayResult);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+
+      if (message.startsWith('Failed job not found')) {
+        return res.status(404).json({ error: message });
+      }
+
+      if (message.includes('not in failed state')) {
+        return res.status(409).json({ error: message });
+      }
+
+      return res.status(500).json({ error: `Failed to reprocess DLQ job: ${message}` });
+    }
+  },
+);
 
 app.post('/api/v1/jobs', async (req: Request, res: Response) => {
   try {
