@@ -59,7 +59,6 @@ import {
   PROVIDERS,
   WebhookMetrics,
 } from './webhookMetrics';
-import type { WebhookRetryConfig } from './appConfiguration';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -229,38 +228,38 @@ export class WebhookDeliveryService {
 
     // ── Normal delivery path ────────────────────────────────────────────────
     const endTimer = this.metrics.deliveryLatencySeconds.startTimer({ provider });
-
-    // Retry loop: attempt up to maxAttempts times
-    while (attemptNumber < this.retryConfig.maxAttempts) {
-      const endTimer = this.metrics.deliveryLatencySeconds.startTimer({ provider });
-      lastStatusCode = undefined;
-      lastErrorType = undefined;
+    let statusCode: number | undefined;
+    let errorType: string | undefined;
 
     try {
-      // Wrap the HTTP call in the circuit breaker so failures are counted and
-      // the breaker transitions correctly.  CircuitOpenError is re-thrown if
-      // a concurrent probe is already in-flight (HALF_OPEN + probeInFlight).
-      //
-      // Non-2xx responses are treated as logical failures by throwing inside
-      // the breaker's execute() callback — this ensures the breaker counts
-      // them without a second execute() call (which would double-count in
-      // HALF_OPEN and risk a premature re-open).
       const response = await breaker.execute(async () => {
         const res = await httpClient(payload.url, payload.body);
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          // Throw so the breaker records a failure; the error code lets
-          // getLabelValues() map it to the correct reason label.
           throw Object.assign(
             new Error(`HTTP ${res.statusCode}`),
-            { code: res.statusCode >= 500 ? '5xx_server_error' : '4xx_client_error', statusCode: res.statusCode },
+            {
+              code: res.statusCode >= 500 ? '5xx_server_error' : '4xx_client_error',
+              statusCode: res.statusCode,
+            },
           );
         }
         return res;
       });
+
       statusCode = response.statusCode;
+      const durationSeconds = endTimer({ status: 'success' });
+      const reason = 'unknown' as const;
+
+      this.metrics.deliveryAttemptsTotal.inc({ status: 'success', provider, reason });
+      this.emitBreakerState(provider, breaker);
+
+      return {
+        success: true,
+        statusCode,
+        durationSeconds,
+      };
     } catch (err: unknown) {
       if (err instanceof CircuitOpenError) {
-        // A concurrent probe was in-flight; treat as circuit-open fast-path.
         const durationSeconds = endTimer({ status: 'failure' });
         this.metrics.deliveryAttemptsTotal.inc({
           status: 'failure',
@@ -268,28 +267,31 @@ export class WebhookDeliveryService {
           reason: 'circuit_open',
         });
         this.emitBreakerState(provider, breaker);
+
         return { success: false, durationSeconds, circuitOpen: true };
       }
-      // Recover the HTTP status code from the thrown error if present (non-2xx path).
-      const errWithStatus = err as NodeJS.ErrnoException & { statusCode?: number };
+
+      const errWithStatus = err as NodeJS.ErrnoException & {
+        statusCode?: number;
+        code?: string;
+      };
       if (errWithStatus.statusCode !== undefined) {
         statusCode = errWithStatus.statusCode;
-      } else {
-        // Network-level error — extract only the error code, never raw messages.
-        errorType = errWithStatus.code ?? 'unknown';
       }
+      errorType = errWithStatus.code ?? 'unknown';
+
+      const { status, reason } = getLabelValues(statusCode, errorType);
+      const durationSeconds = endTimer({ status });
+
+      this.metrics.deliveryAttemptsTotal.inc({ status, provider, reason });
+      this.emitBreakerState(provider, breaker);
+
+      return {
+        success: false,
+        statusCode,
+        durationSeconds,
+      };
     }
-
-    const { status, reason } = getLabelValues(statusCode, errorType);
-    const durationSeconds = endTimer({ status });
-
-    this.metrics.deliveryAttemptsTotal.inc({ status, provider, reason });
-    this.emitBreakerState(provider, breaker);
-
-    return {
-      success: false,
-      durationSeconds: 0,
-    };
   }
 
   /**

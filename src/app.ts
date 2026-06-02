@@ -16,7 +16,8 @@ import { applySecurityMiddleware } from './middleware/security';
 import { MetricsService } from './observability/metrics-service';
 import { rateLimitStore } from './config/rateLimit';
 import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
-import { healthRouter } from './routes/health';
+import { healthRouter as legacyHealthRouter } from './routes/health';
+import { healthRouter as readinessHealthRouter } from './health';
 import { validateEnv } from './config/env.schema';
 import { createRequestLimitsMiddleware } from './middleware/requestLimits';
 
@@ -72,7 +73,8 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   ReputationService.initialize(db);
 
   // ── Routes ────────────────────────────────────────────────────────────────
-  app.use('/health', healthRouter);
+  app.use('/health', legacyHealthRouter);
+  app.use('/health', readinessHealthRouter);
   app.use('/api/config', configRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
   app.use('/api/v1/reputation', reputationRouter);

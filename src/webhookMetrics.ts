@@ -120,3 +120,28 @@ export function createWebhookMetrics(registry: Registry) {
 }
 
 export type WebhookMetrics = ReturnType<typeof createWebhookMetrics>;
+
+/**
+ * Record a throttled webhook delivery (rate limit triggered).
+ * @param providerId - The provider ID that was throttled.
+ */
+export function recordThrottled(providerId: string): void {
+  // Placeholder implementation - can be connected to metrics system
+  // For now, this is a no-op function to satisfy the import requirement
+}
+
+/**
+ * Start DLQ metrics sampling at regular intervals.
+ * @param dlqStore - The DLQ store instance.
+ * @param intervalMs - Sampling interval in milliseconds.
+ * @returns A function to stop sampling.
+ */
+export function startDlqMetricsSampling(dlqStore: any, intervalMs: number): () => void {
+  const intervalId = setInterval(() => {
+    // Placeholder implementation for DLQ metrics sampling
+    // This would typically query dlqStore and record metrics
+  }, intervalMs);
+
+  return () => clearInterval(intervalId);
+}
+

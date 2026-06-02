@@ -47,13 +47,37 @@ export interface EventProcessingAudit {
   correlationId?: string;
 }
 
-export interface EventValidationError {
-  field: string;
-  message: string;
-  value: any;
+/**
+ * Incoming event for idempotency processing.
+ */
+export interface IncomingEvent {
+  providerId: string;
+  eventType: string;
+  eventId: string;
+  timestamp: number;
+  payload: JsonValue;
 }
 
-export interface ValidationResult {
-  isValid: boolean;
-  errors: EventValidationError[];
+/**
+ * Stored idempotency entry.
+ */
+export interface IdempotencyEntry {
+  idempotencyKey: string;
+  providerId: string;
+  eventType: string;
+  eventId: string;
+  responseBody: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Idempotency configuration.
+ */
+export interface IdempotencyConfig {
+  ttlMs: number;
+  gracePeriodMs: number;
+  maxRetries: number;
+  retryDelayMs: number;
+  timestampWindowMs: number;
 }

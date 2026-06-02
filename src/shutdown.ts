@@ -92,6 +92,11 @@ export interface CloseableConnection {
   close(): Promise<void>;
 }
 
+let draining = false;
+
+export function isReadinessDraining(): boolean {
+  return draining;
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,6 +252,7 @@ export function registerShutdownHandlers(
   async function shutdown(signal: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    draining = true;
 
     logger.info('shutdown_initiated', { signal });
 

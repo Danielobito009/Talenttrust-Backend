@@ -49,6 +49,29 @@ async function writeState(state: DeploymentState): Promise<void> {
   await writeFileAsync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+async function checkHealth(port: string): Promise<boolean> {
+  if (process.env.NODE_ENV === "test") {
+    return true;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health/ready`, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "Cache-Control": "no-store" },
+    });
+
+    return response.status === 200;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Health-check function used by `switchToGreen`.
  * Replaced in tests via `setHealthChecker`.

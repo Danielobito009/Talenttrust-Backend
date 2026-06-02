@@ -560,15 +560,35 @@ curl -X DELETE http://localhost:3001/api/v1/contracts/123/metadata/456 \
 
 ## Health Check
 
-**GET** `/health`
+**GET** `/health/live`
 
-Returns the health status of the API service.
+Returns process liveness only. This endpoint should stay up even while dependencies are degraded.
 
 **Response (200):**
 ```json
 {
   "status": "ok",
-  "service": "talenttrust-backend"
+  "service": "talenttrust-backend",
+  "probe": "live"
+}
+```
+
+**GET** `/health/ready`
+
+Returns readiness for traffic. It checks SQLite, the Soroban RPC endpoint, and the queue/Redis dependency with bounded timeouts and returns `503` when any dependency is unavailable.
+
+**Response (200):**
+```json
+{
+  "status": "ready",
+  "service": "talenttrust-backend",
+  "probe": "ready",
+  "activeColor": "blue",
+  "checks": [
+    { "name": "db", "ok": true, "latencyMs": 1 },
+    { "name": "stellar-rpc", "ok": true, "latencyMs": 2 },
+    { "name": "queue", "ok": true, "latencyMs": 3 }
+  ]
 }
 ```
 
