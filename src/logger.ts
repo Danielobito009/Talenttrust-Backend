@@ -88,7 +88,7 @@ const SENSITIVE_KEYS = new Set([
   'webhook_secret',
 ]);
 
-const redactionPaths = Array.from(SENSITIVE_KEYS).flatMap((key: string) => [
+const redactionPaths = Array.from(SENSITIVE_KEYS).flatMap(key => [
   key,
   `*.${key}`,
 ]);

@@ -143,6 +143,41 @@ describe("switchToGreen", () => {
     expect((await getStatus()).activeColor).toBe("green");
   });});
 
+  it("polls until green becomes healthy within timeout", async () => {
+    // Simulate green taking a couple probes to become healthy
+    let calls = 0;
+    setHealthChecker(async () => {
+      calls += 1;
+      // healthy on 3rd probe
+      return calls >= 3;
+    });
+
+    // speed up polling for test
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "500";
+
+    await switchToGreen();
+    expect((await getStatus()).activeColor).toBe("green");
+    expect(calls).toBeGreaterThanOrEqual(3);
+
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
+  });
+
+  it("aborts and leaves blue when green never becomes healthy within timeout", async () => {
+    setHealthChecker(async () => false);
+
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "50";
+
+    await expect(switchToGreen()).rejects.toThrow("Green not ready");
+    const status = await getStatus();
+    expect(status.activeColor).toBe("blue");
+
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
+  });
+
 // ---------------------------------------------------------------------------
 // switchToGreen — unhealthy green
 // ---------------------------------------------------------------------------

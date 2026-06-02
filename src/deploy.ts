@@ -84,6 +84,20 @@ let _healthChecker: (port: string) => Promise<boolean> = async (_port) => {
 };
 
 /**
+ * Polling configuration for `switchToGreen` health gate.
+ * These can be tuned via environment variables in deployment scripts.
+ */
+const DEFAULT_POLL_INTERVAL_MS = 500; // ms between health probes
+const DEFAULT_POLL_TIMEOUT_MS = 5_000; // total timeout before aborting
+
+function parseEnvMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
  * Override the health-check implementation.
  * Intended for testing only — do not call in production code.
  *
@@ -119,11 +133,41 @@ export async function switchToGreen(): Promise<void> {
   _switching = true;
 
   try {
-    const greenHealthy = await _healthChecker(
-      process.env.GREEN_PORT ?? "3002"
+    // Poll the green readiness endpoint until healthy or until timeout.
+    const intervalMs = parseEnvMs(
+      "SWITCH_GREEN_POLL_INTERVAL_MS",
+      DEFAULT_POLL_INTERVAL_MS,
     );
-    if (!greenHealthy) throw new Error("Green not ready");
+    const timeoutMs = parseEnvMs(
+      "SWITCH_GREEN_TIMEOUT_MS",
+      DEFAULT_POLL_TIMEOUT_MS,
+    );
 
+    const port = process.env.GREEN_PORT ?? "3002";
+    const start = Date.now();
+
+    let healthy = false;
+    // Keep probing until healthy or timeout exceeded
+    while (Date.now() - start <= timeoutMs) {
+      try {
+        /* eslint-disable no-await-in-loop */
+        // delegate to the injected health checker (testable)
+        if (await _healthChecker(port)) {
+          healthy = true;
+          break;
+        }
+        /* eslint-enable no-await-in-loop */
+      } catch (err) {
+        // Treat errors as an unhealthy response and continue polling
+      }
+
+      // Wait before the next probe
+      await new Promise((res) => setTimeout(res, intervalMs));
+    }
+
+    if (!healthy) throw new Error("Green not ready");
+
+    // All good — commit the switch atomically
     state.previousColor = state.activeColor;
     state.activeColor = "green";
     state.lastSwitch = Date.now();
@@ -166,9 +210,16 @@ export async function getStatus(): Promise<DeploymentState> {
 if (require.main === module) {
   const cmd = process.argv[2];
   if (cmd === "switch-green") {
-    switchToGreen().catch(console.error);
+      switchToGreen().catch((err) => {
+        console.error(err);
+        // Ensure non-zero exit code on failure to signal CI / callers
+        process.exitCode = 1;
+      });
   } else if (cmd === "rollback") {
-    rollback().catch(console.error);
+      rollback().catch((err) => {
+        console.error(err);
+        process.exitCode = 1;
+      });
   } else if (cmd === "status") {
     getStatus().then(console.log);
   }
