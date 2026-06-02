@@ -51,6 +51,7 @@ export function attachTerminalHandlers(app: express.Application): void {
  * @returns Configured Express app instance (not yet listening).
  */
 export function createApp(options?: AppFactoryOptions): express.Application {
+  const includeTerminalHandlers = options?.includeTerminalHandlers ?? true;
   validateEnv();
   const app = express();
 
@@ -62,9 +63,9 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   );
 
   // ── Middleware ────────────────────────────────────────────────────────────
+  app.use(requestIdMiddleware);
   app.use(createRequestLimitsMiddleware());
   app.use(express.json());
-  app.use(requestIdMiddleware);
   app.use(httpLoggerMiddleware);
   app.use(metricsService.trackHttpRequest.bind(metricsService));
 
@@ -83,11 +84,9 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/admin', adminRouter);
   app.use('/api/v1/admin/deploy', deployRouter);
 
-  // ── 404 handler ──────────────────────────────────────────────────────────
-  app.use(notFoundHandler);
-
-  // ── Global error handler ─────────────────────────────────────────────────
-  app.use(errorHandler);
+  if (includeTerminalHandlers) {
+    attachTerminalHandlers(app);
+  }
 
   return app;
 }
