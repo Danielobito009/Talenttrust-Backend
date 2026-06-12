@@ -15,6 +15,7 @@ import { createAuditRouter } from './audit/router';
 import { createRateLimiter } from './middleware/rateLimiter';
 import { rateLimitConfig } from './config/rateLimit';
 import { requireAuth, requireRole } from './middleware/authorization';
+import type { AuthenticatedRequest } from './middleware/auth';
 import { adminAuthGuard } from './middleware/adminAuthGuard';
 
 const queueManager = QueueManager.getInstance();
