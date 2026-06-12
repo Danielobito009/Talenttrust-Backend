@@ -5,7 +5,7 @@ import { auditService } from '../audit/service';
 import { auditStore } from '../audit/store';
 import { Registry } from 'prom-client';
 import { jobsRouter, initializeJobs } from './jobs';
-import { WebhookDeliveryService } from '../services/WebhookDeliveryService';
+import { WebhookDeliveryService } from '../webhookDelivery';
 import { IdempotencyLayer } from '../events/idempotency';
 import {
   WebhookDLQStorage,
