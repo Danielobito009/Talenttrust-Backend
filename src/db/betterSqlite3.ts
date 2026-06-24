@@ -21,7 +21,3 @@ try {
   Database = MockDatabase;
 }
 export default Database;
-
-export namespace Database {
-  export type Database = any;
-}

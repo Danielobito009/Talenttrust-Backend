@@ -3,6 +3,7 @@ import axios from 'axios';
 import { createWebhookSignature } from '../utils/webhook-signing.util';
 import { getWebhookDLQStorage, WebhookDLQEntry } from '../queue/webhook-dlq';
 import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webhook-retry-policy';
+import { MetricsServiceLike } from '../observability';
 
 export interface WebhookPayload {
   id: string;
@@ -16,6 +17,8 @@ export interface WebhookPayload {
 
 export class WebhookService {
   private dlqStorage = getWebhookDLQStorage();
+
+  constructor(private readonly metrics?: MetricsServiceLike) {}
 
   /**
    * Sends a webhook payload with iterative bounded retry and DLQ fallback.

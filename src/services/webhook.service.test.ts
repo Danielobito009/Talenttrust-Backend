@@ -1,4 +1,5 @@
 import { WebhookService } from './webhook.service';
+import { MetricsServiceLike } from '../observability';
 import axios from 'axios';
 import { createWebhookSignature } from '../utils/webhook-signing.util';
 
