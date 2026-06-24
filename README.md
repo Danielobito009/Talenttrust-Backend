@@ -142,6 +142,7 @@ For full configuration details, see [docs/backend/config.md](docs/backend/config
 - [Event Ingestion Idempotency](docs/EVENT_INGESTION_IDEMPOTENCY.md)
 - [SLA/SLO Definitions and Alert Thresholds](docs/backend/SLA_SLO.md)
 - [Redis Testing Guide](docs/backend/redis-testing-guide.md)
+- [Escrow Contract Lifecycle & Bounds](docs/contracts-lifecycle.md)
 
 ## CI/CD
 
