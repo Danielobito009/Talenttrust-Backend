@@ -82,7 +82,34 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 3,
+    name: "create_notifications_table",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS notifications (",
+      "CREATE INDEX IF NOT EXISTS idx_notifications_user_id",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notifications (
+          id        TEXT PRIMARY KEY,
+          user_id   TEXT NOT NULL,
+          title     TEXT NOT NULL,
+          message   TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_user_id
+          ON notifications(user_id);
+      `);
+    },
+  },
+  {
+    version: 4,
     name: "create_reputation_entries",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS reputation_entries (",
+      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id",
+      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id",
+    ].join("\n"),
     up: (db) => {
       db.exec(`
         CREATE TABLE IF NOT EXISTS reputation_entries (
@@ -101,23 +128,6 @@ const MIGRATIONS: Migration[] = [
 
         CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
           ON reputation_entries(context_id);
-    name: "create_notifications_table",
-    checksumSource: [
-      "CREATE TABLE IF NOT EXISTS notifications (",
-      "CREATE INDEX IF NOT EXISTS idx_notifications_user_id",
-    ].join("\n"),
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS notifications (
-          id        TEXT PRIMARY KEY,
-          user_id   TEXT NOT NULL,
-          title     TEXT NOT NULL,
-          message   TEXT NOT NULL,
-          created_at TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_notifications_user_id
-          ON notifications(user_id);
       `);
     },
   },
@@ -293,4 +303,3 @@ export function runMigrations(
 export function getLatestSchemaVersion(): number {
   return MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
 }
-

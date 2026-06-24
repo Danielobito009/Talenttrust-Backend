@@ -453,4 +453,3 @@ const data = await withRetry(() => fetchFromApi(), {
 | `maxDelayMs` | number | 5000 | Max delay cap in ms |
 | `jitter` | boolean | true | Adds randomness to delay |
 | `isRetryable` | function | `() => true` | Controls which errors retry |
->>>>>>> 93540b906cfee697dd227c0a2fcc9a575f9d1ba5
