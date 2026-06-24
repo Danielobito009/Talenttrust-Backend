@@ -193,6 +193,44 @@ The test suite includes both unit and integration coverage:
 
 Coverage thresholds are enforced in Jest at 95% for statements, branches, functions, and lines (for included modules).
 
+## Queue Processor Logging Convention
+
+All queue processors (`src/queue/processors/`) use the structured logger from `src/logger.ts` — **never** `console.log` / `console.warn` / `console.error`.
+
+### Rules
+
+| Concern | Rule |
+|---|---|
+| Logger instantiation | Each processor calls `createLogger({ processor: '<name>', ...correlationCtx })` at the top of its handler, binding `correlationId` and `requestId` from the job payload. |
+| Log record shape | Every record carries `timestamp`, `level`, `message`, and `service: "talenttrust-backend"`. |
+| PII at info/warn level | Recipient email addresses, `userId`, and `contractId` must **not** appear in `message` strings at `info` or `warn` level. They may be logged at `debug` level as structured fields. |
+| Error path | Validation errors emit a `warn` record (via `log.warn(...)`) **before** throwing, so observers can correlate the rejection with the job's correlation context. |
+| Job IDs | Email tracking IDs are generated with `generateEmailId()` (uses `crypto.randomUUID()`). Never use `Date.now() + Math.random()` for IDs. |
+
+### Example — adding a new processor
+
+```ts
+import { createLogger } from '../../logger';
+
+export async function processMyJob(payload: MyPayload): Promise<JobResult> {
+  const log = createLogger({
+    processor: 'my-processor',
+    ...(payload.correlationId && { correlationId: payload.correlationId }),
+    ...(payload.requestId    && { requestId:    payload.requestId }),
+  });
+
+  if (!isValid(payload)) {
+    log.warn('Validation failed: reason');   // structured, no PII
+    throw new Error('...');
+  }
+
+  log.info('Job started');
+  // ...
+  log.info('Job completed', { someMetric: 42 });
+  return { success: true };
+}
+```
+
 ## Security Notes
 
 1. Input validation is strict at ingestion boundaries to reject malformed payloads early.
