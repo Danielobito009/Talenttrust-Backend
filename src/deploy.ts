@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { register as defaultRegister } from "prom-client";
 
 import { logger } from "./logger";
+import { isSafeUrl } from "./utils/ssrf";
 
 /**
  * Blue-green deployment state machine.
@@ -59,26 +60,38 @@ async function writeState(state: DeploymentState): Promise<void> {
   await writeFileAsync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-async function checkHealth(port: string): Promise<boolean> {
-  if (process.env.NODE_ENV === "test") {
-    return true;
+/**
+ * Perform a single HTTP readiness probe against the green instance.
+ *
+ * Validates the target URL with the SSRF guard so the probe cannot be
+ * redirected to arbitrary internal hosts. Returns `true` only when the
+ * endpoint responds with HTTP 200; any other status or network error is
+ * treated as unhealthy.
+ *
+ * @param port - The port the green instance is listening on.
+ * @param timeoutMs - Abort the request after this many milliseconds (default 3 s).
+ */
+async function checkHealth(port: string, timeoutMs = 3_000): Promise<boolean> {
+  const url = `http://127.0.0.1:${port}/health/ready`;
+
+  if (!isSafeUrl(url)) {
+    throw new Error(`SSRF guard rejected probe target: ${url}`);
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/health/ready`, {
+    const response = await fetch(url, {
       method: "GET",
       signal: controller.signal,
       headers: { "Cache-Control": "no-store" },
     });
-
     return response.status === 200;
   } catch {
     return false;
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timer);
   }
 }
 
@@ -86,12 +99,7 @@ async function checkHealth(port: string): Promise<boolean> {
  * Health-check function used by `switchToGreen`.
  * Replaced in tests via `setHealthChecker`.
  */
-let _healthChecker: (port: string) => Promise<boolean> = async (_port) => {
-  // Real implementation would do:
-  //   const res = await axios.get(`http://localhost:${_port}/health/ready`);
-  //   return res.status === 200;
-  return true;
-};
+let _healthChecker: (port: string) => Promise<boolean> = checkHealth;
 
 /**
  * Polling configuration for `switchToGreen` health gate.

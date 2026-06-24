@@ -49,12 +49,24 @@ afterAll(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Default health checker (exercises the built-in fallback)
+// Default health checker — real HTTP readiness probe
 // ---------------------------------------------------------------------------
 
 describe("default health checker", () => {
-  it("returns true and allows the switch when no override is set", async () => {
-    // Use a fresh module instance so the default _healthChecker runs
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it("promotes green when the probe returns HTTP 200", async () => {
+    global.fetch = jest.fn().mockResolvedValue({ status: 200 } as Response);
+
     let freshSwitch!: () => Promise<void>;
     let freshStatus!: () => Promise<DeploymentState>;
 
@@ -66,9 +78,85 @@ describe("default health checker", () => {
     });
 
     clearState();
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "500";
+
     await freshSwitch();
     const s = await freshStatus();
     expect(s.activeColor).toBe("green");
+
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
+  });
+
+  it("aborts the switch when the probe returns HTTP 503", async () => {
+    global.fetch = jest.fn().mockResolvedValue({ status: 503 } as Response);
+
+    let freshSwitch!: () => Promise<void>;
+
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const m = require("./deploy");
+      freshSwitch = m.switchToGreen;
+    });
+
+    clearState();
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "50";
+
+    await expect(freshSwitch()).rejects.toThrow("Green not ready");
+
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
+  });
+
+  it("aborts the switch when the probe throws (connection refused)", async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error("ECONNREFUSED"));
+
+    let freshSwitch!: () => Promise<void>;
+
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const m = require("./deploy");
+      freshSwitch = m.switchToGreen;
+    });
+
+    clearState();
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "50";
+
+    await expect(freshSwitch()).rejects.toThrow("Green not ready");
+
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
+  });
+
+  it("probes the port provided via GREEN_PORT", async () => {
+    const fetchSpy = jest.fn().mockResolvedValue({ status: 200 } as Response);
+    global.fetch = fetchSpy;
+
+    let freshSwitch!: () => Promise<void>;
+
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const m = require("./deploy");
+      freshSwitch = m.switchToGreen;
+    });
+
+    clearState();
+    process.env.GREEN_PORT = "4002";
+    process.env.SWITCH_GREEN_POLL_INTERVAL_MS = "10";
+    process.env.SWITCH_GREEN_TIMEOUT_MS = "500";
+
+    await freshSwitch();
+
+    const calledUrl = (fetchSpy.mock.calls[0] as [string])[0];
+    expect(calledUrl).toContain("4002");
+    expect(calledUrl).toContain("/health/ready");
+
+    delete process.env.GREEN_PORT;
+    delete process.env.SWITCH_GREEN_POLL_INTERVAL_MS;
+    delete process.env.SWITCH_GREEN_TIMEOUT_MS;
   });
 });
 
