@@ -26,7 +26,9 @@ describe("runMigrations", () => {
       )
       .all();
 
-    expect(rows.map((row) => row.version)).toEqual([1, 2]);
+    expect(rows.map((row) => row.version)).toEqual(
+      Array.from({ length: getLatestSchemaVersion() }, (_, index) => index + 1),
+    );
     expect(rows.every((row) => /^[a-f0-9]{64}$/.test(row.checksum))).toBe(true);
   });
 
@@ -80,6 +82,46 @@ describe("runMigrations", () => {
       .get(2);
 
     expect(row?.version).toBe(2);
+  });
+
+  it("upgrades legacy up.toString checksums when checksumSource is introduced", () => {
+    const migrations: Migration[] = [
+      {
+        version: 1,
+        name: "create_demo_table",
+        checksumSource: "CREATE TABLE demo (id INTEGER PRIMARY KEY);",
+        up: (migrationDb) => {
+          migrationDb.exec("CREATE TABLE demo (id INTEGER PRIMARY KEY);");
+        },
+      },
+    ];
+
+    const legacyMigrations: Migration[] = [
+      {
+        version: 1,
+        name: "create_demo_table",
+        up: migrations[0]!.up,
+      },
+    ];
+
+    runMigrations(db, legacyMigrations);
+
+    const legacyRow = db
+      .prepare<[], { checksum: string }>(
+        "SELECT checksum FROM schema_version WHERE version = 1"
+      )
+      .get();
+
+    runMigrations(db, migrations);
+
+    const upgradedRow = db
+      .prepare<[], { checksum: string }>(
+        "SELECT checksum FROM schema_version WHERE version = 1"
+      )
+      .get();
+
+    expect(upgradedRow?.checksum).toBe(computeMigrationChecksum(migrations[0]!));
+    expect(upgradedRow?.checksum).not.toBe(legacyRow?.checksum);
   });
 
   it("backfills checksums for existing schema_version rows that predate checksum tracking", () => {
