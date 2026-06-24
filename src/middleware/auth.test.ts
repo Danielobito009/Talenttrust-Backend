@@ -16,7 +16,7 @@ describe('authMiddleware', () => {
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
-    };
+    } as any;
     (next as jest.Mock).mockClear();
   });
 
@@ -28,17 +28,42 @@ describe('authMiddleware', () => {
     const req = { headers: {} } as AuthenticatedRequest;
     await authMiddleware(req, res as Response, next);
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Missing or malformed Authorization header.' });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'unauthorized' }) })
+    );
   });
 
   it('returns 401 for an invalid or tampered token', async () => {
     const req = {
       headers: { authorization: 'Bearer this.is.invalid_token' },
     } as unknown as AuthenticatedRequest;
-
     await authMiddleware(req, res as Response, next);
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid token.' });
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'unauthorized' }) })
+    );
+  });
+
+  it('rejects demo-admin-token with 401', async () => {
+    const req = {
+      headers: { authorization: 'Bearer demo-admin-token' },
+    } as unknown as AuthenticatedRequest;
+    await authMiddleware(req, res as Response, next);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'unauthorized' }) })
+    );
+  });
+
+  it('rejects demo-user-token with 401', async () => {
+    const req = {
+      headers: { authorization: 'Bearer demo-user-token' },
+    } as unknown as AuthenticatedRequest;
+    await authMiddleware(req, res as Response, next);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'unauthorized' }) })
+    );
   });
 
   it('calls next and parses user context on valid JWT', async () => {

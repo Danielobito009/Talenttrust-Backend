@@ -142,6 +142,7 @@ For full configuration details, see [docs/backend/config.md](docs/backend/config
 - [Event Ingestion Idempotency](docs/EVENT_INGESTION_IDEMPOTENCY.md)
 - [SLA/SLO Definitions and Alert Thresholds](docs/backend/SLA_SLO.md)
 - [Redis Testing Guide](docs/backend/redis-testing-guide.md)
+- [Escrow Contract Lifecycle & Bounds](docs/contracts-lifecycle.md)
 
 ## CI/CD
 
@@ -192,6 +193,44 @@ The test suite includes both unit and integration coverage:
 3. Failure-path tests for malformed payloads, duplicate replays, and unexpected processing errors.
 
 Coverage thresholds are enforced in Jest at 95% for statements, branches, functions, and lines (for included modules).
+
+## Queue Processor Logging Convention
+
+All queue processors (`src/queue/processors/`) use the structured logger from `src/logger.ts` — **never** `console.log` / `console.warn` / `console.error`.
+
+### Rules
+
+| Concern | Rule |
+|---|---|
+| Logger instantiation | Each processor calls `createLogger({ processor: '<name>', ...correlationCtx })` at the top of its handler, binding `correlationId` and `requestId` from the job payload. |
+| Log record shape | Every record carries `timestamp`, `level`, `message`, and `service: "talenttrust-backend"`. |
+| PII at info/warn level | Recipient email addresses, `userId`, and `contractId` must **not** appear in `message` strings at `info` or `warn` level. They may be logged at `debug` level as structured fields. |
+| Error path | Validation errors emit a `warn` record (via `log.warn(...)`) **before** throwing, so observers can correlate the rejection with the job's correlation context. |
+| Job IDs | Email tracking IDs are generated with `generateEmailId()` (uses `crypto.randomUUID()`). Never use `Date.now() + Math.random()` for IDs. |
+
+### Example — adding a new processor
+
+```ts
+import { createLogger } from '../../logger';
+
+export async function processMyJob(payload: MyPayload): Promise<JobResult> {
+  const log = createLogger({
+    processor: 'my-processor',
+    ...(payload.correlationId && { correlationId: payload.correlationId }),
+    ...(payload.requestId    && { requestId:    payload.requestId }),
+  });
+
+  if (!isValid(payload)) {
+    log.warn('Validation failed: reason');   // structured, no PII
+    throw new Error('...');
+  }
+
+  log.info('Job started');
+  // ...
+  log.info('Job completed', { someMetric: 42 });
+  return { success: true };
+}
+```
 
 ## Security Notes
 
@@ -296,6 +335,8 @@ The API uses **Role-Based Access Control (RBAC)** with four roles: `admin`,
 See [docs/backend/authentication-authorization.md](docs/backend/authentication-authorization.md)
 for the full access control matrix, architecture, and security notes.
 
+For API key authentication (used by internal/external service integrations), see [docs/api-keys.md](docs/api-keys.md) for the complete lifecycle, scope reference, and rotation guidance.
+
 ## Request Validation Framework
 
 The API now includes a schema-based request validation framework for:
@@ -357,6 +398,42 @@ Upstream RPC calls (Stellar/Soroban) are protected by a built-in circuit breaker
 
 Live state is available at `GET /api/v1/circuit-breaker/status`. See [`docs/backend/circuit-breaker.md`](docs/backend/circuit-breaker.md) for full reference.
 
+## Blockchain Sync
+
+The `blockchain-sync` background job ingests on-chain Soroban contract events
+into the local indexer. It scans a ledger range, fetches events from the
+Soroban RPC layer, and persists each event so downstream consumers (reputation,
+escrow flows) see the latest chain state.
+
+| Behaviour | Detail |
+| --------- | ------ |
+| **Real RPC ingestion** | Events are fetched via `SorobanRpcService.getEvents` (no more stubbed batches). |
+| **Idempotent persistence** | Each event is keyed by `contractId:eventId:ledger`; replayed or retried batches never double-write. |
+| **Circuit-breaker guarded** | Every RPC call runs through the shared breaker; an open circuit fast-fails the job. |
+| **Resumable** | Progress is checkpointed per batch via a cursor, so a restarted job resumes from the last synced ledger instead of re-scanning from zero. |
+| **Fail-and-retry** | RPC/timeout errors throw so the queue retries the job rather than silently reporting success. |
+| **SSRF-guarded** | `SOROBAN_RPC_URL` is validated against the SSRF allow-list before any egress. |
+
+Job payload (`BlockchainSyncPayload`):
+
+```jsonc
+{
+  "network": "soroban",   // or "stellar"
+  "startBlock": 1000,      // optional — resumes from the last cursor when omitted
+  "endBlock": 1100         // optional — defaults to the current chain head
+}
+```
+
+| Environment variable | Default | Description |
+| -------------------- | ------- | ----------- |
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint (must be a public, SSRF-safe URL). |
+| `SOROBAN_CONTRACT_ID` | *(empty)* | When set, events are filtered to this contract. |
+
+When neither `startBlock` nor a stored cursor exists, the job starts from ledger
+`0`; when `endBlock` is omitted, the current chain head is discovered via
+`getLatestLedger`. If there is nothing new to sync, the job returns early
+without making event calls.
+
 ## New Features
 
 ### 1. Authentication Middleware (#55)
@@ -417,4 +494,3 @@ const data = await withRetry(() => fetchFromApi(), {
 | `maxDelayMs` | number | 5000 | Max delay cap in ms |
 | `jitter` | boolean | true | Adds randomness to delay |
 | `isRetryable` | function | `() => true` | Controls which errors retry |
->>>>>>> 93540b906cfee697dd227c0a2fcc9a575f9d1ba5

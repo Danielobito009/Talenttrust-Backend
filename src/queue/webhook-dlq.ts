@@ -15,7 +15,7 @@
  * @module queue/webhook-dlq
  */
 
-import Database from 'better-sqlite3';
+import Database from '../db/betterSqlite3';
 import path from 'path';
 import * as crypto from 'crypto';
 import { Counter, Registry } from 'prom-client';
@@ -84,7 +84,7 @@ function incrementDLQMetric(operation: DLQOperation): void {
 }
 
 class WebhookDLQStorage {
-  private db: Database.Database;
+  private db: typeof Database;
   private config: DLQConfig;
 
   constructor(dbPath?: string, config: Partial<DLQConfig> = {}) {

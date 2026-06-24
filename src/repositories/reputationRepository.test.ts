@@ -10,7 +10,7 @@
 
 import { ReputationRepository, CreateReputationEntry } from './reputationRepository';
 import { getDb, closeDb } from '../db/database';
-import Database from 'better-sqlite3';
+import Database from '../db/betterSqlite3';
 import { ConflictError } from '../errors/appError';
 
 describe('ReputationRepository', () => {

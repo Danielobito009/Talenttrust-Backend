@@ -12,7 +12,7 @@
  *  - UNIQUE constraint prevents duplicate ratings at DB level
  */
 
-import Database from 'better-sqlite3';
+import Database from '../db/betterSqlite3';
 import { randomUUID } from 'crypto';
 import { ConflictError } from '../errors/appError';
 

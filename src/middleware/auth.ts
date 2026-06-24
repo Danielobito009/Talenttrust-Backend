@@ -1,14 +1,21 @@
 /**
  * @module auth
- * @description JWT authentication middleware for TalentTrust.
+ * @description Legacy authentication middleware.
  *
- * Token verification uses HS256 with `JWT_SECRET` from the environment.
+ * This module previously contained insecure backdoor token handling.
+ * It now simply re‑exports the verified JWT middleware `requireAuth`
+ * from `authorization.ts` for backward compatibility.
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import { requireAuth } from './authorization';
 import { requirePermission } from './authorization';
-import { database } from '../database';
 
+/**
+ * Request type extended with optional `user` payload populated by
+ * the authentication middleware. The shape mirrors the `User`
+ * type used throughout the codebase.
+ */
 export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
@@ -17,64 +24,18 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-export const authMiddleware = async (
+/**
+ * Backwards‑compatible authentication middleware. Delegates to the
+ * verified JWT implementation `requireAuth`. Existing imports of
+ * `authMiddleware` continue to work without code changes.
+ */
+export const authMiddleware = requireAuth as (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-) => {
-  const authHeader = req.headers.authorization;
+) => void;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    const requestId =
-      typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-    return res.status(401).json({
-      error: {
-        code: 'unauthorized',
-        message: 'Authentication required',
-        requestId,
-      },
-    });
-  }
-
-  const token = authHeader.substring(7);
-
-  if (token === 'demo-admin-token') {
-    req.user = {
-      id: 'admin-user-id',
-      email: 'admin@talenttrust.com',
-      role: 'admin',
-    };
-    return next();
-  }
-
-  if (token === 'demo-user-token') {
-    req.user = {
-      id: 'demo-user-id',
-      email: 'user@talenttrust.com',
-      role: 'user',
-    };
-    return next();
-  }
-
-  const user = await database.getUserById(token);
-  if (user) {
-    req.user = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-    };
-    return next();
-  }
-
-  const requestId =
-    typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-  return res.status(401).json({
-    error: {
-      code: 'unauthorized',
-      message: 'Invalid authentication token',
-      requestId,
-    },
-  });
-};
-
+/**
+ * Permission guard for contract updates. Kept unchanged.
+ */
 export const requireContractAccess = requirePermission('contracts', 'update');

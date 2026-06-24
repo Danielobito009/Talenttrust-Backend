@@ -28,8 +28,7 @@ All API endpoints return a consistent JSON envelope.
 
 ### Helper Functions
 
-Use `ok(res, data, meta?, status?)` and `fail(res, code, message, status?)` 
-from `src/utils/apiResponse.ts` in all controllers.
+Use `ok(res, data, meta?, status?)` and `fail(res, code, message, status?)` from `src/utils/apiResponse.ts` in all controllers.
 
 - `requestId` is always included from `res.locals.requestId`
 - Falls back to `"unknown"` if requestId is not set
@@ -120,9 +119,7 @@ Authorization: Bearer <token>
 ## Error Responses
 
 All terminal API errors are serialized through the safe error message policy.
-Internal exception details, stack traces, file paths, SQL fragments, dependency
-hostnames, tokens, and secrets are logged only through redacted structured logs
-and are never returned to API clients.
+Internal exception details, stack traces, file paths, SQL fragments, dependency hostnames, tokens, and secrets are logged only through redacted structured logs and are never returned to API clients.
 
 Every policy-managed error response uses this envelope:
 
@@ -136,8 +133,7 @@ Every policy-managed error response uses this envelope:
 }
 ```
 
-Validation responses may include a `details` array with field-level Zod issue
-metadata. These details are also passed through the same safe-message filters.
+Validation responses may include a `details` array with field-level Zod issue metadata. These details are also passed through the same safe-message filters.
 
 Common status/code mappings:
 
@@ -154,8 +150,57 @@ Common status/code mappings:
 | 500 | `internal_error` | An unexpected error occurred |
 | 503 | `dependency_unavailable` | A required service is temporarily unavailable |
 
-Use the returned `requestId` when contacting support; it ties the response to
-redacted server-side logs without exposing sensitive internals.
+Use the returned `requestId` when contacting support; it ties the response to redacted server-side logs without exposing sensitive internals.
+
+## Configuration API
+### Get Application Configuration
+**GET** `/api/config`
+
+**Access**: Public
+
+Returns application configuration including allowed assets.
+
+## System & Dependency Health
+### Get Dependency Scan Report
+**GET** `/api/v1/dependency-scan`
+
+**Access**: Admin (`Authorization: Bearer <admin-token>`)
+
+Admin-only. Returns production dependency scan status and remediation guidance.
+
+## Admin Operations
+Admin endpoints provide operational visibility and are secured via the `adminAuthGuard`.
+
+### Queue Health
+**GET** `/api/v1/admin/queue-health`
+
+Returns health metrics for the background job queues, including recent failures and pending job counts.
+
+### Circuit Breakers
+**GET** `/api/v1/admin/circuit-breakers`
+
+Returns the current state (closed, open, half-open) and failure/success counters for all registered upstream circuit breakers. Useful for monitoring upstream dependency health without exposing internals to unauthenticated callers.
+
+## Deployment API (Blue/Green)
+Manage zero-downtime deployments. All deployment routes are mounted at `/api/v1/admin/deploy` and require admin authentication via JWT or API key.
+
+### Get Deployment Status
+**GET** `/api/v1/admin/deploy/status`
+
+Returns the current deployment state without modifying it. Returns 200 with deployment state JSON.
+
+### Switch to Green
+**POST** `/api/v1/admin/deploy/switch-green`
+
+Promotes the green instance to active status.
+- Idempotent if already green (returns 202 Accepted or 200 OK).
+- Returns 502 Bad Gateway if the green instance is unhealthy.
+- Returns 409 Conflict if a switch is already in progress.
+
+### Rollback to Blue
+**POST** `/api/v1/admin/deploy/rollback`
+
+Reverts traffic to the blue instance. Idempotent if already blue (returns `200 OK`).
 
 ## Contracts API
 
@@ -163,17 +208,58 @@ redacted server-side logs without exposing sensitive internals.
 
 The Contracts API provides endpoints for managing escrow contract records. Contract records include a `version` field that enables Optimistic Concurrency Control (OCC) on update operations.
 
+### Authentication & Authorization
+
+All contract endpoints require a valid `Authorization: Bearer <jwt>` header (HS256, signed with `JWT_SECRET`).
+
+#### Role-based access matrix
+
+| Method | Path | admin | client | freelancer |
+|--------|------|-------|--------|------------|
+| GET | `/contracts` | ✅ | ❌ (ownOnly — collection requires owner resolver) | ❌ (ownOnly) |
+| POST | `/contracts` | ✅ | ✅ | ❌ |
+| GET | `/contracts/:id` | ✅ | ✅ (ownOnly) | ✅ (ownOnly) |
+| PATCH | `/contracts/:id` | ✅ | ✅ (ownOnly) | ✅ (ownOnly) |
+| DELETE | `/contracts/:id` | ✅ | ❌ | ❌ |
+
+**ownOnly** — the caller's JWT `sub` must equal the contract's `clientId`. The owner check is resolved from the database; it is never derived from caller-supplied parameters.
+
+#### Error responses
+
+- `401 Unauthorized` — missing header, malformed token, expired token, wrong secret, or invalid role claim.
+- `403 Forbidden` — authenticated but role/ownership check failed.
+- `404 Not Found` — the contract does not exist (also returned by `requirePermission` when the `getResourceOwnerId` resolver returns `null`, to avoid leaking resource existence to non-owners).
+
 ### The `version` Field
 
 Every contract record carries a `version` field:
 
 - **Type:** `integer` (non-negative)
-- **Initial value:** `0` — set automatically when a contract is created
+- **Initial value:** `0` - set automatically when a contract is created
 - **Increment:** incremented by exactly `1` on every successful update
 
 The `version` field is included in all GET and PATCH responses. Clients must echo back the `version` they last read when submitting an update; the server accepts the write only when the stored version matches, then atomically increments it.
 
 ### Endpoints
+#### List Contracts
+**GET** `/api/v1/contracts`
+
+Retrieves a list of available contracts.
+
+#### Get Contract Bounds
+**GET** `/api/v1/contracts/bounds`
+
+Retrieves global statistical bounds and limits for contracts.
+
+#### Get Contract Stats
+**GET** `/api/v1/contracts/stats`
+
+Retrieves contract system statistics (e.g., total active volume, total completed volume).
+
+#### Get Contract by ID
+**GET** `/api/v1/contracts/:id`
+
+Retrieves details for a single contract by its UUID.
 
 #### Update Contract
 
@@ -189,7 +275,7 @@ Updates an existing contract record using Optimistic Concurrency Control. The re
 }
 ```
 
-**Response (200) — success:**
+**Response (200) - success:**
 ```json
 {
   "status": "success",
@@ -208,7 +294,7 @@ Updates an existing contract record using Optimistic Concurrency Control. The re
 
 The `version` in the response (`4`) is exactly 1 greater than the version supplied in the request (`3`).
 
-**Response (409) — version conflict:**
+**Response (409) - version conflict:**
 ```json
 {
   "success": false,
@@ -221,7 +307,7 @@ The `version` in the response (`4`) is exactly 1 greater than the version suppli
 
 Returned when the supplied `version` does not match the stored version, meaning another client has modified the contract since you last read it.
 
-**Response (400) — missing version:**
+**Response (400) - missing version:**
 ```json
 {
   "success": false,
@@ -234,7 +320,7 @@ Returned when the supplied `version` does not match the stored version, meaning 
 
 Returned when the request body does not include a `version` field.
 
-**Response (400) — invalid version:**
+**Response (400) - invalid version:**
 ```json
 {
   "success": false,
@@ -246,6 +332,11 @@ Returned when the request body does not include a `version` field.
 ```
 
 Returned when `version` is present but is not a non-negative integer (e.g., a negative number, a float, a string, or `null`).
+
+#### Delete Contract
+**DELETE** `/api/v1/contracts/:id`
+
+Soft deletes a contract by ID. Requires authentication.
 
 ### Client Retry Strategy
 
@@ -438,6 +529,35 @@ Soft deletes a metadata record. The record is marked as deleted but retained in 
 
 **Error Responses:**
 - `401` - Authentication required
+
+## Reputation API
+Manage freelancer reviews and ratings. Registered dynamically in the OpenAPI registry. All reputation routes require a valid JWT.
+
+### Get Reputation Profile
+**GET** `/api/v1/reputation/:id`
+
+**Permissions**: Requires `reviews.read` (Admin, Client, Freelancer).
+
+Retrieves aggregated scores, total ratings, and a list of reviews for the specific freelancer.
+
+### Submit a Reputation Review
+**PUT** `/api/v1/reputation/:id`
+
+(*Also aliased via **POST*** `/api/v1/reputation/:id/rate`)
+
+**Permissions**: Requires `reviews.create`.
+
+Submits a new rating and comment. Duplicate ratings from the same user or self-ratings will trigger a `409 Conflict` or `403 Forbidden` response utilizing the standard Error Envelope.
+
+Request Body:
+
+```JSON
+{
+  "reviewerId": "123e4567-e89b-12d3-a456-426614174000",
+  "rating": 5,
+  "comment": "Excellent freelancer!"
+}
+```
 
 ## Jobs DLQ API
 

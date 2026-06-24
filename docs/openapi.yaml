@@ -9,6 +9,8 @@ paths:
   /contracts:
     get:
       summary: List contracts
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of contracts
@@ -18,8 +20,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Contract"
+        "401":
+          description: Unauthorized — missing or invalid JWT
+        "403":
+          description: Forbidden — insufficient permissions
     post:
       summary: Create a contract
+      security:
+        - bearerAuth: []
       requestBody:
         content:
           application/json:
@@ -32,6 +40,92 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Contract"
+        "400":
+          description: Validation error
+        "401":
+          description: Unauthorized — missing or invalid JWT
+        "403":
+          description: Forbidden — role does not have contracts:create permission
+
+  /contracts/{id}:
+    get:
+      summary: Get a single contract by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Contract found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contract"
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden — caller does not own this contract
+        "404":
+          description: Contract not found
+    patch:
+      summary: Update an existing contract (owner or admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContract"
+      responses:
+        "200":
+          description: Contract updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contract"
+        "400":
+          description: Validation error
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden — non-owner or insufficient role
+        "404":
+          description: Contract not found
+        "409":
+          description: Version conflict (OCC)
+    delete:
+      summary: Delete a contract (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Contract deleted
+        "401":
+          description: Unauthorized
+        "403":
+          description: Forbidden — admin role required
+        "404":
+          description: Contract not found
 
   /contracts/{contractId}/metadata:
     parameters:
@@ -60,11 +154,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ContractMetadata'
         '400':
-          description: Bad Request
+          $ref: "#/components/responses/ValidationError"
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
         '409':
-          description: Conflict
+          $ref: "#/components/responses/ConflictError"
     get:
       summary: List metadata
       description: Retrieves paginated metadata records for a contract.
@@ -109,7 +203,7 @@ paths:
                   limit:
                     type: integer
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
 
   /contracts/{contractId}/metadata/{id}:
     parameters:
@@ -137,10 +231,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ContractMetadata'
-        '400':
-          description: Not Found
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
+        '404':
+          $ref: "#/components/responses/NotFoundError"
     patch:
       summary: Update metadata
       description: Updates an existing metadata record.
@@ -160,9 +254,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ContractMetadata'
         '400':
-          description: Bad Request
+          $ref: "#/components/responses/ValidationError"
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
+        '404':
+          $ref: "#/components/responses/NotFoundError"
     delete:
       summary: Delete metadata
       description: Soft deletes a metadata record.
@@ -172,11 +268,15 @@ paths:
         '204':
           description: No Content
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
+        '404':
+          $ref: "#/components/responses/NotFoundError"
 
   /reputation/{id}:
     get:
       summary: Get freelancer reputation
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -204,8 +304,14 @@ paths:
                         type: number
                       reviewCount:
                         type: number
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
     put:
       summary: Update freelancer reputation
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -229,23 +335,130 @@ paths:
                   status:
                     type: string
                     example: success
-  /health:
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /reputation/{id}/rate:
+    post:
+      summary: Create reputation rating
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateReputation"
+      responses:
+        "201":
+          description: Rating created successfully
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+
+  /dependency-scan:
     get:
-      summary: Health check
+      summary: Get dependency scan report
+      description: Admin-only. Returns production dependency scan status and remediation guidance.
+      security:
+        - bearerAuth: []
       responses:
         "200":
-          description: Service is healthy
+          description: Scan report retrieved
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /admin/queue-health:
+    get:
+      summary: Get queue health
+      description: Returns queue health and recent failures.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Queue health retrieved
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /admin/circuit-breakers:
+    get:
+      summary: Get circuit breakers status
+      description: Returns the current state and counters for all registered circuit breakers.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Circuit breakers state retrieved
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+
+  /admin/deploy/status:
+    get:
+      summary: Get deployment status
+      description: Returns the current deployment state without modifying it.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deployment state retrieved
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /admin/deploy/switch-green:
+    post:
+      summary: Promote green instance
+      description: Promotes the green instance to active.
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Switched to green successfully
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "502":
+          description: Green instance not healthy
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-                  service:
-                    type: string
-                    example: talenttrust-backend
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/deploy/rollback:
+    post:
+      summary: Rollback to blue
+      description: Rolls back to the previous (blue) instance.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Rolled back to blue successfully
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+
   /audit/export:
     get:
       summary: Export audit logs
@@ -304,11 +517,57 @@ paths:
                 type: string
                 format: binary
         '401':
-          description: Unauthorized
+          $ref: "#/components/responses/UnauthorizedError"
         '403':
-          description: Forbidden
+          $ref: "#/components/responses/ForbiddenError"
         '429':
           description: Rate limited
+
+  /config:
+    servers:
+      - url: /api
+    get:
+      summary: Get application configuration
+      description: Returns application configuration including allowed assets.
+      responses:
+        "200":
+          description: Configuration retrieved
+    post:
+      summary: Configuration status check
+      responses:
+        "200":
+          description: Status ok
+
+  /health/live:
+    servers:
+      - url: /
+    get:
+      summary: Health check liveness
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: talenttrust-backend
+
+  /health/ready:
+    servers:
+      - url: /
+    get:
+      summary: Health check readiness
+      responses:
+        "200":
+          description: Service is ready
+        "503":
+          description: Dependency unavailable
 
 components:
   securitySchemes:
@@ -316,6 +575,18 @@ components:
       type: http
       scheme: bearer
   schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            requestId:
+              type: string
     Contract:
       type: object
       properties:
@@ -328,6 +599,8 @@ components:
           type: string
         budget:
           type: number
+        version:
+          type: integer
         created_by:
           type: string
           format: uuid
@@ -435,6 +708,26 @@ components:
           example: false
       additionalProperties: false
 
+    UpdateContract:
+      type: object
+      required:
+        - version
+      properties:
+        version:
+          type: integer
+          minimum: 0
+          description: OCC version — must match the current stored version
+          example: 0
+        title:
+          type: string
+          minLength: 5
+          maxLength: 100
+          example: Updated Contract Title
+        status:
+          type: string
+          enum: [draft, active, completed, cancelled, disputed]
+          example: active
+
     UpdateReputation:
       type: object
       properties:
@@ -453,3 +746,40 @@ components:
       required:
         - reviewerId
         - rating
+  responses:
+    ValidationError:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnauthorizedError:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ForbiddenError:
+      description: Permission denied
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ConflictError:
+      description: Resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

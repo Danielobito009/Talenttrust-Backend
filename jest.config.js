@@ -16,14 +16,12 @@ module.exports = {
     'deployment/integration.test.ts',
     'retention/integration.test.ts',
     'contractMetadata.integration.test.ts',
-    'TransactionPoller.test.ts',
     'requestLogger.test.ts',
     'reputation.controller.test.ts',
     'validate.middleware.test.ts',
     'src/auth/__tests__/roles.test.ts',
     'src/config/config.test.ts',
     'src/controllers/__tests__/apiKeyController.test.ts',
-    'src/controllers/contracts.integration.test.ts',
     'src/httpClient.test.ts',
     'src/index.test.ts',
     'src/logger.test.ts',
@@ -37,7 +35,7 @@ module.exports = {
     'src/routes/admin.routes.test.ts',
     'src/routes/reputation.api.test.ts',
     'src/services/contracts.service.test.ts',
-    'src/services/reputation.service.test.ts',
+    // 'src/services/reputation.service.test.ts', — re-enabled: anti-abuse guard tests
     // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
   ],
   transform: {

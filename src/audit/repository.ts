@@ -2,6 +2,7 @@ import path from 'path';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
 import { AuditStore, auditStore } from './store';
 import { SqliteAuditRepository } from './sqliteRepository';
+import * as Database from '../db/betterSqlite3';
 
 export interface AuditLogRepository {
   append(input: CreateAuditEntryInput): AuditEntry;
@@ -30,9 +31,7 @@ export function createDefaultAuditRepository(): AuditLogRepository {
         : path.join(process.cwd(), 'talenttrust-audit.db'));
     // Load the native driver only when the SQLite backend is selected so
     // in-memory tests can run on machines without compiled bindings.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
-    const db = new Database(dbPath);
+    const db = new Database.default(dbPath);
     return new SqliteAuditRepository(db);
   }
 

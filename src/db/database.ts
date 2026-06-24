@@ -16,11 +16,12 @@
  *  - In production, restrict filesystem permissions on the DB file (chmod 600).
  */
 
-import Database from "better-sqlite3";
+import Database from "./betterSqlite3";
+
 import path from "path";
 import { runMigrations } from "./migrations";
 
-let instance: Database.Database | null = null;
+let instance: typeof Database | null = null;
 
 /**
  * Returns the shared database instance, creating it on first call.
@@ -28,7 +29,7 @@ let instance: Database.Database | null = null;
  * @param dbPath - Optional path override (used by tests to pass ':memory:').
  *                 If omitted, falls back to DB_PATH env var or 'talenttrust.db'.
  */
-export function getDb(dbPath?: string): Database.Database {
+export function getDb(dbPath?: string): typeof Database {
   if (instance) return instance;
 
   const resolvedPath =
