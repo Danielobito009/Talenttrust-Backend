@@ -45,3 +45,5 @@ jest.mock('ioredis', () => ({
 process.env.NODE_ENV = 'test';
 process.env.REDIS_HOST = 'localhost';
 process.env.REDIS_PORT = '6379';
+process.env.COMPLIANCE_AUDIT_SECRET = 'a'.repeat(32);
+

@@ -237,9 +237,8 @@ Defined in: `src/retention/audit.ts`
 
 | Variable                  | Required             | Default                                  | Description                                                                                                                       |
 | ------------------------- | -------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `COMPLIANCE_AUDIT_SECRET` | **Yes (production)** | `talenttrust-compliance-secret-key-2024` | HMAC-SHA256 key used to sign compliance audit exports. **The default is hardcoded and insecure — always override in production.** |
+| `COMPLIANCE_AUDIT_SECRET` | **Yes**              | _(none)_                  | HMAC-SHA256 key used to sign compliance audit exports. **Must be at least 32 characters. There is no fallback.** |
 
-> **Warning:** This variable is missing from `.env.example`. Add it before deploying to any non-development environment.
 
 ---
 
@@ -387,7 +386,6 @@ TRUST_PROXY=true                           # if behind a load balancer
 
 | Issue                                                                                | Recommendation                                                          |
 | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `COMPLIANCE_AUDIT_SECRET` has a hardcoded insecure default                           | Add to `.env.example` and enforce via `REQUIRED_ENV_VARS` in production |
 | `ALLOWED_ORIGINS` and `CORS_ORIGINS` serve the same purpose in two different modules | Consolidate to a single variable in a future refactor                   |
 | `SOROBAN_RPC_URL` has different defaults in `env.schema.ts` vs `sorobanEnv.ts`       | Set `SOROBAN_RPC_URL` explicitly in all environments to avoid ambiguity |
 | `METRICS_AUTH_TOKEN` is optional but the `/metrics` endpoint is open without it      | Enforce this variable via `REQUIRED_ENV_VARS` in staging and production |
