@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { MetricsServiceLike } from '../observability';
 
 export interface WebhookPayload {
   id: string;
@@ -18,6 +19,8 @@ const INITIAL_DELAY = 1000; // 1 second
 export class WebhookService {
   private dlq: DLQEntry[] = []; // In production, this would be a DB table or Redis list
 
+  constructor(private readonly metrics?: MetricsServiceLike) {}
+
   /**
    * Sends a webhook with exponential backoff
    */
@@ -27,12 +30,14 @@ export class WebhookService {
         headers: { 'Content-Type': 'application/json' }
       });
       console.log(`Webhook ${payload.id} delivered successfully.`);
+      this.metrics?.recordWebhookDelivery('success');
     } catch (error: any) {
       if (payload.retryCount < MAX_RETRIES) {
         const delay = INITIAL_DELAY * Math.pow(2, payload.retryCount);
         payload.retryCount++;
-        
+
         console.warn(`Webhook ${payload.id} failed. Retrying in ${delay}ms...`);
+        this.metrics?.recordWebhookDelivery('failure');
         setTimeout(() => this.send(payload), delay);
       } else {
         this.handleToDLQ(payload, error.message);
@@ -47,6 +52,8 @@ export class WebhookService {
       lastError: error,
     };
     this.dlq.push(entry);
+    this.metrics?.recordWebhookDelivery('dlq');
+    this.metrics?.setWebhookDlqDepth(this.dlq.length);
     console.error(`Webhook ${payload.id} moved to DLQ. Reason: ${error}`);
   }
 
