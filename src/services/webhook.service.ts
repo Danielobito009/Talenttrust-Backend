@@ -133,5 +133,56 @@ export class WebhookService {
   async getDLQStats(): Promise<{ total: number; pending: number; replayed: number }> {
     return this.dlqStorage.getStats();
   }
+
+  /**
+   * Replays all pending DLQ entries with bounded concurrency (backpressure).
+   *
+   * Iterates every non-replayed DLQ entry, skipping already-replayed entries,
+   * and processes up to `concurrency` entries in parallel at a time.
+   *
+   * @param options.concurrency - Max number of concurrent replays (default: 5).
+   * @returns Summary of the bulk replay: attempted, succeeded, failed, deduped counts.
+   *
+   * @example
+   * const summary = await webhookService.replayAll({ concurrency: 10 });
+   * // { attempted: 20, succeeded: 18, failed: 1, deduped: 1 }
+   */
+  async replayAll(options: { concurrency?: number } = {}): Promise<{
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    deduped: number;
+  }> {
+    const concurrency = Math.max(1, options.concurrency ?? 5);
+    const entries = this.dlqStorage.listEntries({ limit: 10000 }).filter((e) => !e.replayedAt);
+
+    let attempted = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let deduped = 0;
+
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const batch = entries.slice(i, i + concurrency);
+      const results = await Promise.allSettled(batch.map((e) => this.replayDLQEntry(e.id)));
+
+      for (const result of results) {
+        attempted++;
+        if (result.status === 'fulfilled') {
+          const { success, message } = result.value;
+          if (success && message === 'Deduplicated - entry already pending replay') {
+            deduped++;
+          } else if (success) {
+            succeeded++;
+          } else {
+            failed++;
+          }
+        } else {
+          failed++;
+        }
+      }
+    }
+
+    return { attempted, succeeded, failed, deduped };
+  }
 }
 
