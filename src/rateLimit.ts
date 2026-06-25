@@ -10,11 +10,10 @@
  * enough tokens have refilled — deliveries are **paced/queued, never dropped**.
  *
  * ## State
- * Buckets are held in-process (a plain `Map`).  In a blue/green or
- * multi-replica deployment each process maintains its own independent bucket
- * state.  This is intentional: the implementation does not require Redis or
- * any shared store.  See `docs/request-limits-implementation.md` for the
- * trade-off discussion and upgrade path.
+ * Buckets are held in the shared in-process `RateLimitStore`. In a blue/green
+ * or multi-replica deployment each process maintains its own independent bucket
+ * state unless the store interface is backed by Redis or another shared
+ * implementation.
  *
  * ## Configuration (environment variables)
  * | Variable                        | Default | Description                              |
@@ -31,66 +30,20 @@
  */
 
 import { recordThrottled } from './webhookMetrics';
+import { rateLimitConfig } from './config/rateLimit';
+import {
+  loadWebhookTokenBucketConfig,
+  rateLimitStore,
+  type WebhookTokenBucketConfig,
+} from './config/rateLimit';
+import type { RateLimitStoreInterface, TokenBucketEntry } from './lib/rateLimitStore';
 
 // ---------------------------------------------------------------------------
 // Configuration helpers
 // ---------------------------------------------------------------------------
 
-/** Validated, parsed rate-limiter configuration. */
-export interface RateLimiterConfig {
-  /** Maximum number of tokens a single provider bucket can hold. */
-  capacity: number;
-  /** Number of tokens added to each bucket per second. */
-  refillRatePerSec: number;
-}
-
-/**
- * Parse and validate rate-limiter configuration from environment variables.
- *
- * @throws {Error} If any value is missing, non-numeric, non-positive, or
- *   `capacity` is zero (which would make every delivery block forever).
- */
-export function loadRateLimiterConfig(): RateLimiterConfig {
-  const rawCapacity = process.env.WEBHOOK_BUCKET_CAPACITY ?? '10';
-  const rawRefill = process.env.WEBHOOK_REFILL_RATE_PER_SEC ?? '2';
-
-  const capacity = Number(rawCapacity);
-  const refillRatePerSec = Number(rawRefill);
-
-  if (!Number.isFinite(capacity) || capacity <= 0) {
-    throw new Error(
-      `[rateLimit] Invalid WEBHOOK_BUCKET_CAPACITY="${rawCapacity}". ` +
-        'Must be a finite positive number greater than zero.',
-    );
-  }
-
-  if (!Number.isFinite(refillRatePerSec) || refillRatePerSec <= 0) {
-    throw new Error(
-      `[rateLimit] Invalid WEBHOOK_REFILL_RATE_PER_SEC="${rawRefill}". ` +
-        'Must be a finite positive number greater than zero.',
-    );
-  }
-
-  return { capacity, refillRatePerSec };
-}
-
-// ---------------------------------------------------------------------------
-// Internal bucket state
-// ---------------------------------------------------------------------------
-
-/** Runtime state for a single provider's token bucket. */
-interface BucketState {
-  /** Current token count (may be fractional between refill ticks). */
-  tokens: number;
-  /** Timestamp (ms) of the last refill calculation. */
-  lastRefillMs: number;
-  /** Pending waiters in FIFO order. Each resolves when a token is available. */
-  queue: Array<() => void>;
-}
-
-// ---------------------------------------------------------------------------
-// TokenBucketLimiter
-// ---------------------------------------------------------------------------
+export type RateLimiterConfig = WebhookTokenBucketConfig;
+export const loadRateLimiterConfig = loadWebhookTokenBucketConfig;
 
 /**
  * Per-provider token-bucket rate limiter.
@@ -108,16 +61,19 @@ interface BucketState {
 export class TokenBucketLimiter {
   private readonly capacity: number;
   private readonly refillRatePerSec: number;
-  private readonly buckets: Map<string, BucketState> = new Map();
+  private readonly store: RateLimitStoreInterface;
 
   /**
    * @param config - Parsed configuration.  Defaults to
    *   {@link loadRateLimiterConfig} (reads env vars) when omitted.
+   * @param store - Shared rate-limit store. Defaults to the process-wide store
+   *   from `src/config/rateLimit.ts`.
    */
-  constructor(config?: RateLimiterConfig) {
+  constructor(config?: RateLimiterConfig, store: RateLimitStoreInterface = rateLimitStore) {
     const resolved = config ?? loadRateLimiterConfig();
     this.capacity = resolved.capacity;
     this.refillRatePerSec = resolved.refillRatePerSec;
+    this.store = store;
   }
 
   // -------------------------------------------------------------------------
@@ -140,6 +96,7 @@ export class TokenBucketLimiter {
 
     if (bucket.tokens >= 1) {
       bucket.tokens -= 1;
+      this.store.setTokenBucket(providerId, bucket);
       return;
     }
 
@@ -151,6 +108,7 @@ export class TokenBucketLimiter {
 
     return new Promise<void>((resolve) => {
       bucket.queue.push(resolve);
+      this.store.setTokenBucket(providerId, bucket);
       this.scheduleRefill(providerId);
     });
   }
@@ -182,16 +140,17 @@ export class TokenBucketLimiter {
   /**
    * Retrieve or lazily create the bucket state for a provider.
    */
-  private getBucket(providerId: string): BucketState {
-    if (!this.buckets.has(providerId)) {
-      this.buckets.set(providerId, {
-        tokens: this.capacity,
-        lastRefillMs: Date.now(),
-        queue: [],
-      });
-    }
-    // Non-null assertion is safe: we just set it above if absent.
-    return this.buckets.get(providerId)!;
+  private getBucket(providerId: string): TokenBucketEntry {
+    const existing = this.store.getTokenBucket(providerId);
+    if (existing) return existing;
+
+    const created: TokenBucketEntry = {
+      tokens: this.capacity,
+      lastRefillMs: Date.now(),
+      queue: [],
+    };
+    this.store.setTokenBucket(providerId, created);
+    return created;
   }
 
   /**
@@ -208,6 +167,7 @@ export class TokenBucketLimiter {
 
     bucket.tokens = Math.min(this.capacity, bucket.tokens + added);
     bucket.lastRefillMs = nowMs;
+    this.store.setTokenBucket(providerId, bucket);
   }
 
   /**
@@ -218,7 +178,6 @@ export class TokenBucketLimiter {
    * re-schedules itself while the queue is non-empty.
    */
   private scheduleRefill(providerId: string): void {
-    const bucket = this.getBucket(providerId);
     // Time (ms) until the next whole token is available.
     const msUntilToken = Math.ceil((1 / this.refillRatePerSec) * 1_000);
 
@@ -240,6 +199,7 @@ export class TokenBucketLimiter {
       const resolve = bucket.queue.shift()!;
       resolve();
     }
+    this.store.setTokenBucket(providerId, bucket);
 
     if (bucket.queue.length > 0) {
       this.scheduleRefill(providerId);

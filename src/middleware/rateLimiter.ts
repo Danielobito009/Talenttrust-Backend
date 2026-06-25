@@ -44,7 +44,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { RateLimitStore } from '../lib/rateLimitStore';
+import { RateLimitStore, type RateLimitStoreInterface } from '../lib/rateLimitStore';
 import { sanitizeErrorMessage } from '../errors/safeErrors';
 
 
@@ -102,7 +102,7 @@ export interface RateLimiterConfig {
    * Shared store instance. Useful for testing or multi-limiter coordination.
    * A new store is created if omitted.
    */
-  store?: RateLimitStore;
+  store?: RateLimitStoreInterface;
 }
 
 // ─── Internal state per key ───────────────────────────────────────────────────
