@@ -43,6 +43,7 @@ function auth(token: string) {
 // ─── Shared contract payload ───────────────────────────────────────────────
 
 const validPayload = {
+
   title: 'Test Contract Title',
   description: 'This is a valid long enough description for testing.',
   clientId: CLIENT_ID,
@@ -189,7 +190,56 @@ describe('POST /api/v1/contracts', () => {
   });
 });
 
+describe('POST /api/v1/contracts idempotency', () => {
+  it('returns 400 when Idempotency-Key header is missing', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set(auth(adminToken()))
+      .send(validPayload);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'bad_request' });
+  });
+
+  it('replay with same key returns the same response and does not create a duplicate contract', async () => {
+    const idempotencyKey = 'idem-create-1';
+
+    const first = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
+      .send(validPayload);
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
+      .send(validPayload);
+
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual(first.body);
+  });
+
+  it('replay with same key but different body returns 409 Conflict', async () => {
+    const idempotencyKey = 'idem-create-2';
+
+    const first = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
+      .send(validPayload);
+    expect(first.status).toBe(201);
+
+    const differentBody = { ...validPayload, title: 'Different Title' };
+    const replay = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
+      .send(differentBody);
+
+    expect(replay.status).toBe(409);
+    expect(replay.body.error).toMatchObject({ code: 'conflict' });
+  });
+});
+
 // ─── GET /api/v1/contracts/:id ────────────────────────────────────────────────
+
 
 describe('GET /api/v1/contracts/:id', () => {
   let contractId: string;

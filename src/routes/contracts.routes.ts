@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+
+
 import { createContractsController } from '../controllers/contracts.controller';
 import { ContractsService } from '../services/contracts.service';
 import { ContractRepository } from '../repositories/contractRepository';
@@ -6,6 +8,12 @@ import { getDb } from '../db/database';
 import { validateSchema } from '../middleware/validate.middleware';
 import { createContractSchema, updateContractSchema } from '../modules/contracts/dto/contract.dto';
 import { eventIngestionService } from '../events/registry';
+import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
+import { requireAuth, requirePermission } from '../middleware/authorization';
+
+
+
+
 
 /**
  * Creates the contracts router with injected dependencies.
@@ -23,10 +31,11 @@ function createContractsRouter(): Router {
    * Used by requirePermission for ownOnly PATCH and DELETE checks.
    * Returns null when the contract does not exist (triggers 404).
    */
-  const getContractOwnerId = async (req: AuthenticatedRequest): Promise<string | null> => {
-    const contract = repo.findById(req.params.id ?? '');
+  const getContractOwnerId = async (req: any): Promise<string | null> => {
+    const contract = repo.findById(req.params?.id ?? '');
     return contract ? contract.clientId : null;
   };
+
 
   // GET /bounds — public-facing bounds, still requires auth
   /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
@@ -61,13 +70,19 @@ function createContractsRouter(): Router {
     }
   });
   router.get('/:id', controller.getContractById);
+  /**
+   * POST /api/v1/contracts
+   * Supports Idempotency-Key to safely retry contract creation without creating duplicates.
+   */
   router.post(
     '/',
     requireAuth,
     requirePermission('contracts', 'create'),
+    contractCreateIdempotencyMiddleware(),
     validateSchema(createContractSchema),
     controller.createContract,
   );
+
 
   // PATCH /:id — update an existing contract (owner or admin only)
   /** @permission contracts:update (ownOnly for client/freelancer) — admin, client, freelancer */
