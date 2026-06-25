@@ -276,7 +276,7 @@ export class TokenBucketLimiter {
    * re-schedules itself while the queue is non-empty.
    */
   private scheduleRefill(providerId: string): void {
-    const bucket = this.getBucket(providerId);
+    this.getBucket(providerId);
     // Time (ms) until the next whole token is available.
     const msUntilToken = Math.ceil((1 / this.refillRatePerSec) * 1_000);
 

@@ -312,7 +312,7 @@ describe('rateLimit', () => {
       });
 
       it('should handle provider with very long ID', () => {
-        const longId = 'a'.repeat(100);
+        const _longId = 'a'.repeat(100);
         limiter.startMetricsSampling(tokenGauge, queueDepthGauge, 10000);
 
         const metrics = registry.metrics();
