@@ -82,7 +82,7 @@ function parseTargets(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
-function parseAssets(value: string | undefined): string[] {
+function _parseAssets(value: string | undefined): string[] {
   if (!value) {
     return ['USDC', 'XLM', 'BTC', 'ETH']; // Default assets
   }

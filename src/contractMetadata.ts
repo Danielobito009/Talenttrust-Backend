@@ -80,7 +80,7 @@ export function getMismatchMetric(): Counter<string> {
 export function resetMetricsForTest(): void {
   try {
     register.clear();
-  } catch (e) {
+  } catch (_e) {
     // ignore
   }
 }
