@@ -27,6 +27,7 @@ IDEMPOTENCY_RETRY_DELAY_MS=10
 
 ### Initialize
 
+
 ```typescript
 import { IdempotencyStore } from './src/events/idempotencyStore';
 import { EventProcessor } from './src/events/idempotency';
@@ -49,6 +50,27 @@ const response = await processor.processEvent(event, async (evt) => {
 ```typescript
 const purged = store.purgeExpired();
 console.log(`Removed ${purged} expired entries`);
+```
+
+---
+
+## HTTP Idempotency (Contract Creation)
+
+To safely retry contract creation without creating duplicate escrow contracts, send an `Idempotency-Key` header with `POST /api/v1/contracts`.
+
+- **Scope**: per authenticated user (derived from `req.user.id`)
+- **Replay**: identical key + identical request body returns the original response and includes `idempotencyHeader: "replay-detected"`
+- **Conflict**: identical key + different request body returns `409 Conflict`
+
+Example:
+
+```bash
+curl -X POST \
+  /api/v1/contracts \
+  -H "Authorization: Bearer <jwt>" \
+  -H "Idempotency-Key: <your-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"...","description":"...","clientId":"...","freelancerId":"...","budget":5000}'
 ```
 
 ---
@@ -105,27 +127,6 @@ npm run test:ci -- idempotency.test.ts
 
 ### High `SQLITE_BUSY` Error Rate
 
-**Solution:**
-1. Increase `IDEMPOTENCY_MAX_RETRIES` (3 → 5)
-2. Increase `IDEMPOTENCY_RETRY_DELAY_MS` (10ms → 20ms)
-3. Migrate to PostgreSQL for higher concurrency
-
-### Duplicate Side Effects
-
-**Solution:**
-1. Verify schema: `sqlite3 idempotency.db ".schema"`
-2. Check for `PRIMARY KEY` on `idempotency_key`
-3. Verify `BEGIN IMMEDIATE` in `idempotencyStore.ts`
-
-### Purge Job Blocking Requests
-
-**Solution:**
-1. Run purge more frequently (every 30 min)
-2. Batch deletes: `DELETE ... LIMIT 1000`
-3. Run during low-traffic periods
-
----
-
 ## Security Checklist
 
 - ✅ No secrets in database
@@ -149,6 +150,8 @@ npm run test:ci -- idempotency.test.ts
 ---
 
 ## File Locations
+
+
 
 ```
 src/events/
