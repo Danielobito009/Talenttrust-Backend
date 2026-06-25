@@ -15,6 +15,12 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "crypto";
 import type { Contract, ContractStatus } from "../db/types";
+import {
+  encodeCursor,
+  decodeCursor,
+  parseLimit,
+} from "../contracts/cursor.repository";
+import type { CursorPage, CursorPaginationInput } from "../contracts/cursor.types";
 
 /** Row shape as returned from SQLite (snake_case columns). */
 interface ContractRow {
@@ -157,5 +163,80 @@ export class ContractRepository {
       .prepare<[string]>("DELETE FROM contracts WHERE id = ?")
       .run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * Returns a stable, cursor-paginated page of contracts.
+   *
+   * Ordering is `(created_at DESC, id DESC)` — using both columns ensures
+   * deterministic ordering even when multiple rows share the same timestamp.
+   *
+   * The cursor encodes the `(createdAt, id)` of the **last item** returned in
+   * the previous page.  To retrieve the first page, omit `cursor`.
+   *
+   * Limit is clamped to [1, 100].  Requesting more than 100 rows throws so
+   * callers cannot load the entire table via the paginated endpoint.
+   *
+   * @param input - {@link CursorPaginationInput} with optional `limit` and `cursor`.
+   * @returns A {@link CursorPage} containing items and navigation metadata.
+   * @throws When `cursor` is malformed or `limit` exceeds the maximum.
+   *
+   * @example
+   * // First page
+   * const page1 = repo.findPage({ limit: 10 });
+   *
+   * // Subsequent page
+   * const page2 = repo.findPage({ limit: 10, cursor: page1.nextCursor! });
+   */
+  findPage(input: CursorPaginationInput = {}): CursorPage<Contract> {
+    const limit = parseLimit(input.limit);
+
+    let rows: ContractRow[];
+
+    if (input.cursor) {
+      // Decode and validate the cursor before touching the DB
+      const pos = decodeCursor(input.cursor);
+
+      /**
+       * Keyset pagination predicate:
+       *   (created_at < anchor)
+       *   OR (created_at = anchor AND id < anchor_id)
+       *
+       * This correctly handles timestamp collisions while preserving the
+       * DESC order without an OFFSET scan.
+       */
+      rows = this.db
+        .prepare<[string, string, string, number], ContractRow>(
+          `SELECT * FROM contracts
+           WHERE (created_at < ? OR (created_at = ? AND id < ?))
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(pos.createdAt, pos.createdAt, pos.id, limit + 1);
+    } else {
+      // First page — no anchor needed
+      rows = this.db
+        .prepare<[number], ContractRow>(
+          `SELECT * FROM contracts
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(limit + 1);
+    }
+
+    // Fetching limit+1 lets us detect whether a next page exists without a
+    // separate COUNT query.
+    const hasNextPage = rows.length > limit;
+    const pageRows = hasNextPage ? rows.slice(0, limit) : rows;
+    const data = pageRows.map(toContract);
+
+    // Build the cursor pointing at the last item in this page
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasNextPage && lastRow
+        ? encodeCursor({ createdAt: lastRow.created_at, id: lastRow.id })
+        : null;
+
+    return { data, nextCursor, hasNextPage, limit };
   }
 }

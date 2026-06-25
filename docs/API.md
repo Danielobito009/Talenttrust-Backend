@@ -211,11 +211,77 @@ Metadata marked as `is_sensitive: true` is automatically masked for unauthorized
 
 ## Pagination
 
-List endpoints support pagination with the following parameters:
-- `page` - Page number (must be > 0)
-- `limit` - Items per page (1-100)
+### Cursor-Based Pagination (Contracts List — recommended)
 
-The response includes pagination metadata:
+The `GET /api/v1/contracts` endpoint uses **cursor-based pagination**.  Unlike
+offset pagination this approach is O(log n) — it does not degrade as the
+dataset grows and it never skips or duplicates rows when records are inserted
+between requests.
+
+#### Query Parameters
+
+| Parameter | Type   | Default | Constraints          | Description                                      |
+|-----------|--------|---------|----------------------|--------------------------------------------------|
+| `limit`   | number | `20`    | 1–100 (inclusive)    | Maximum items to return in one page.             |
+| `cursor`  | string | —       | opaque base-64 token | Pagination cursor from the previous page's `nextCursor`. Omit on the first page. |
+
+#### Response Shape
+
+```json
+{
+  "status": "success",
+  "data": {
+    "data": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "status": "PENDING",
+        "createdAt": "ISO8601"
+      }
+    ],
+    "nextCursor": "eyJjcmVhdGVkQXQiOiIyMDI0LTAxLTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6InV1aWQifQ",
+    "hasNextPage": true,
+    "limit": 20
+  }
+}
+```
+
+- `nextCursor` is `null` when the current page is the last page.
+- `hasNextPage` is `true` when `nextCursor` is non-null.
+- The cursor is opaque — do not attempt to parse or construct it manually.
+
+#### Traversal Example
+
+```bash
+# First page (no cursor)
+curl "http://localhost:3001/api/v1/contracts?limit=10" \
+  -H "Authorization: Bearer demo-user-token"
+
+# Next page (use nextCursor from previous response)
+curl "http://localhost:3001/api/v1/contracts?limit=10&cursor=<nextCursor>" \
+  -H "Authorization: Bearer demo-user-token"
+```
+
+#### Ordering
+
+Results are ordered by `createdAt DESC`, with `id DESC` as a tie-breaker when
+two contracts share an identical timestamp.  This ordering is stable — adding
+new contracts does not change the position of existing items relative to each
+other.
+
+#### Error Responses
+
+- `400 Bad Request` — `limit` exceeds 100, is non-positive, or `cursor` is malformed.
+
+### Legacy Offset Pagination (Metadata endpoints)
+
+Metadata list endpoints still use offset-based pagination:
+
+| Parameter | Type   | Default | Constraints | Description          |
+|-----------|--------|---------|-------------|----------------------|
+| `page`    | number | `1`     | > 0         | Page number.         |
+| `limit`   | number | `20`    | 1–100       | Items per page.      |
+
 ```json
 {
   "records": [...],
