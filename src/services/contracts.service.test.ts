@@ -141,6 +141,88 @@ describe('ContractsService', () => {
       expect(updated.status).toBe('active');
     });
 
+    it('persists budget (amount) when provided', async () => {
+      const created = await contractsService.createContract({
+        title: 'Budget test',
+        description: 'Test budget update',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      const updated = await contractsService.updateContract(created.id, {
+        version: 0,
+        budget: 5000,
+      });
+
+      expect(updated.amount).toBe(5000);
+    });
+
+    it('persists freelancerId when provided', async () => {
+      const created = await contractsService.createContract({
+        title: 'Freelancer test',
+        description: 'Test freelancer update',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      const freelancerId = '550e8400-e29b-41d4-a716-446655440001';
+      const updated = await contractsService.updateContract(created.id, {
+        version: 0,
+        freelancerId,
+      });
+
+      expect(updated.freelancerId).toBe(freelancerId);
+    });
+
+    it('throws ContractBoundsError when updated budget exceeds cap', async () => {
+      const created = await contractsService.createContract({
+        title: 'Bounds test',
+        description: 'Test bounds violation',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      await expect(
+        contractsService.updateContract(created.id, {
+          version: 0,
+          budget: MAX_CONTRACT_AMOUNT_STROOPS + 1,
+        })
+      ).rejects.toThrow(ContractBoundsError);
+    });
+
+    it('throws ContractBoundsError when updated milestones exceed cap', async () => {
+      const created = await contractsService.createContract({
+        title: 'Milestones test',
+        description: 'Test milestone bounds',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      const milestones = Array.from({ length: MAX_MILESTONES_PER_CONTRACT + 1 }, (_, i) => ({
+        title: `M${i}`,
+        description: `D${i}`,
+        amount: 1,
+        completed: false,
+      }));
+
+      await expect(
+        contractsService.updateContract(created.id, { version: 0, milestones })
+      ).rejects.toThrow(ContractBoundsError);
+    });
+
+    it('throws an error for empty patch (no-op update)', async () => {
+      const created = await contractsService.createContract({
+        title: 'No-op test',
+        description: 'Testing empty patch',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      await expect(
+        contractsService.updateContract(created.id, { version: 0 })
+      ).rejects.toThrow(/field/i);
+    });
+
     it('should throw error when updating non-existent contract', async () => {
       const updateData: UpdateContractDto = {
         version: 0,

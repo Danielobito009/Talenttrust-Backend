@@ -9,6 +9,8 @@
 import Redis from "ioredis";
 import { getDb } from "../db/database";
 import { ProbeResult } from "./types";
+import { QueueManager } from "../queue/queue-manager";
+import { circuitBreakerRegistry } from "../circuit-breaker/registry";
 
 const REDIS_PROBE_TIMEOUT_MS = 3_000;
 
@@ -140,5 +142,88 @@ export async function redisProbe(): Promise<ProbeResult> {
     } catch {
       // best-effort cleanup
     }
+  }
+}
+
+const QUEUE_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * Probe: checks BullMQ queue health via {@link QueueManager.getHealth}.
+ *
+ * Reports `degraded` when any queue has failed-job count above
+ * `QUEUE_FAILED_THRESHOLD` or waiting backlog above `QUEUE_BACKLOG_THRESHOLD`.
+ * The probe resolves in at most `QUEUE_PROBE_TIMEOUT_MS` ms.
+ *
+ * Thresholds are configurable via env at call time:
+ * - `QUEUE_PROBE_TIMEOUT_MS` (default 3000)
+ * - `QUEUE_FAILED_THRESHOLD` (default 10)
+ * - `QUEUE_BACKLOG_THRESHOLD` (default 100)
+ */
+export async function queueProbe(): Promise<ProbeResult> {
+  const timeoutMs = parseInt(process.env["QUEUE_PROBE_TIMEOUT_MS"] ?? String(QUEUE_PROBE_TIMEOUT_MS), 10);
+  const failedThreshold = parseInt(process.env["QUEUE_FAILED_THRESHOLD"] ?? "10", 10);
+  const backlogThreshold = parseInt(process.env["QUEUE_BACKLOG_THRESHOLD"] ?? "100", 10);
+  const start = Date.now();
+  try {
+    const healthInfos = await Promise.race([
+      QueueManager.getInstance().getHealth(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("queue probe timeout")), timeoutMs)
+      ),
+    ]);
+
+    const violations: string[] = [];
+    for (const q of healthInfos) {
+      if (q.failed > failedThreshold) {
+        violations.push(`${q.jobType}: ${q.failed} failed jobs`);
+      }
+      if (q.waiting > backlogThreshold) {
+        violations.push(`${q.jobType}: ${q.waiting} waiting jobs`);
+      }
+    }
+
+    const ok = violations.length === 0;
+    return {
+      name: "queue",
+      ok,
+      detail: ok ? undefined : violations.join("; "),
+      latencyMs: Date.now() - start,
+    };
+  } catch (err: unknown) {
+    return {
+      name: "queue",
+      ok: false,
+      detail: err instanceof Error ? err.message : "unknown error",
+      latencyMs: Date.now() - start,
+    };
+  }
+}
+
+/**
+ * Probe: reports the number of open circuit breakers from
+ * {@link circuitBreakerRegistry}.
+ *
+ * Returns `ok: false` (degraded) when at least one breaker is in the OPEN
+ * state. Detail is a count of open breakers — no internal topology is exposed.
+ */
+export async function circuitBreakerProbe(): Promise<ProbeResult> {
+  const start = Date.now();
+  try {
+    const statuses = circuitBreakerRegistry.getAll();
+    const openCount = statuses.filter((s) => s.state === "OPEN").length;
+    const ok = openCount === 0;
+    return {
+      name: "circuit-breaker",
+      ok,
+      detail: ok ? undefined : `${openCount} breaker(s) open`,
+      latencyMs: Date.now() - start,
+    };
+  } catch (err: unknown) {
+    return {
+      name: "circuit-breaker",
+      ok: false,
+      detail: err instanceof Error ? err.message : "unknown error",
+      latencyMs: Date.now() - start,
+    };
   }
 }

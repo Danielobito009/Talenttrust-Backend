@@ -6,11 +6,11 @@
  * failing probe never blocks the others.
  */
 
-import { dbProbe, envProbe, redisProbe, stellarRpcProbe } from "./probes";
+import { dbProbe, envProbe, redisProbe, stellarRpcProbe, queueProbe, circuitBreakerProbe } from "./probes";
 import { HealthResponse, Probe } from "./types";
 
 /** Default probe registry. Override via the probes parameter for testing. */
-const DEFAULT_PROBES: Probe[] = [envProbe, dbProbe, redisProbe, stellarRpcProbe];
+const DEFAULT_PROBES: Probe[] = [envProbe, dbProbe, redisProbe, stellarRpcProbe, queueProbe, circuitBreakerProbe];
 
 /**
  * Run all probes concurrently and return a structured health response.

@@ -154,16 +154,14 @@ export class ContractRepository {
    * Atomically updates contract fields only when the stored version matches
    * `expectedVersion`, then increments the version by 1.
    *
-   * No SELECT precedes the UPDATE — the WHERE clause makes the check and
-   * increment a single atomic operation within SQLite's serialized write model.
+   * Supports: title, status, amount, freelancerId.
    *
    * @param id              - UUID of the contract to update.
    * @param fields          - Partial set of mutable fields to apply.
    * @param expectedVersion - The version the caller last read; must match the
    *                          stored version or the update is rejected.
    * @returns The updated Contract (with incremented version).
-   * @throws {VersionConflictError} When `result.changes === 0` (id not found
-   *         or version mismatch — both require the client to re-fetch).
+   * @throws {VersionConflictError} When `result.changes === 0`.
    */
   updateWithVersion(
     id: string,
@@ -171,14 +169,23 @@ export class ContractRepository {
     expectedVersion: number,
   ): Contract {
     const result = this.db
-      .prepare<[string | null, string | null, string, number]>(
+      .prepare<[string | null, string | null, number | null, string | null, string, number]>(
         `UPDATE contracts
-         SET title  = COALESCE(?, title),
-             status = COALESCE(?, status),
-             version = version + 1
+         SET title         = COALESCE(?, title),
+             status        = COALESCE(?, status),
+             amount        = COALESCE(?, amount),
+             freelancer_id = COALESCE(?, freelancer_id),
+             version       = version + 1
          WHERE id = ? AND version = ?`,
       )
-      .run(fields.title ?? null, fields.status ?? null, id, expectedVersion);
+      .run(
+        fields.title ?? null,
+        fields.status ?? null,
+        fields.amount ?? null,
+        fields.freelancerId ?? null,
+        id,
+        expectedVersion,
+      );
 
     if (result.changes === 0) {
       throw new VersionConflictError();

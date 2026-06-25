@@ -70,13 +70,47 @@ export class ContractsService {
 
   /**
    * Updates a contract using Optimistic Concurrency Control.
+   *
+   * Maps every updatable field from {@link UpdateContractDto} into the update
+   * payload and re-runs {@link validateContractBounds} whenever `budget` or
+   * `milestones` are included in the patch. Rejects empty patches with a
+   * validation error so callers receive a clear signal rather than a misleading
+   * 200 that changed nothing.
+   *
+   * @param id  - UUID of the contract to update.
+   * @param dto - Partial update payload including the OCC `version`.
+   * @throws ContractBoundsError  when amount or milestone bounds are violated.
+   * @throws ValidationError      when the patch is empty.
+   * @throws VersionConflictError when the version is stale.
    */
   public async updateContract(id: string, dto: UpdateContractDto): Promise<Contract> {
     const { version, ...fields } = dto;
+
+    // Reject no-op updates
+    const hasFields = Object.keys(fields).some(
+      (k) => (fields as Record<string, unknown>)[k] !== undefined
+    );
+    if (!hasFields) {
+      throw new Error('At least one field must be provided for an update.');
+    }
+
+    // Re-validate bounds when amount or milestones are being changed
+    const budget = fields.budget;
+    const milestones = fields.milestones;
+    if (budget !== undefined || milestones !== undefined) {
+      // Fall back to 0 if budget is absent so the bounds check can still run on milestones alone
+      const boundsCheck = validateContractBounds(budget ?? 0, milestones);
+      if (!boundsCheck.valid) {
+        throw new ContractBoundsError(boundsCheck.error);
+      }
+    }
+
     const updateFields: Partial<Contract> = {};
-    if (fields.title) updateFields.title = fields.title;
-    if (fields.status) updateFields.status = fields.status;
-    
+    if (fields.title !== undefined) updateFields.title = fields.title;
+    if (fields.status !== undefined) updateFields.status = fields.status;
+    if (fields.budget !== undefined) updateFields.amount = fields.budget;
+    if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
+
     return this.contractRepository.updateWithVersion(id, updateFields, version);
   }
 

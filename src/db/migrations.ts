@@ -68,74 +68,68 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 3,
-{
-  version: 3,
-  name: "create_smart_contract_events_table",
-  checksumSource: [
-    "CREATE TABLE IF NOT EXISTS smart_contract_events (",
-    "UNIQUE(contractId, eventType, idempotencyKey)",
-  ].join("\n"),
-  up: (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS smart_contract_events (
-        eventId TEXT PRIMARY KEY,
-        contractId TEXT NOT NULL,
-        eventType TEXT NOT NULL,
-        idempotencyKey TEXT,
-        payload TEXT,
-        timestamp TEXT NOT NULL,
-        UNIQUE(contractId, eventType, idempotencyKey)
-      );
-    `);
+    name: "create_smart_contract_events_table",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS smart_contract_events (",
+      "UNIQUE(contractId, eventType, idempotencyKey)",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS smart_contract_events (
+          eventId TEXT PRIMARY KEY,
+          contractId TEXT NOT NULL,
+          eventType TEXT NOT NULL,
+          idempotencyKey TEXT,
+          payload TEXT,
+          timestamp TEXT NOT NULL,
+          UNIQUE(contractId, eventType, idempotencyKey)
+        );
+      `);
+    },
   },
-},
-{
-  version: 4,
-  name: "create_reputation_entries",
-  checksumSource: [
-    "CREATE TABLE IF NOT EXISTS reputation_entries (",
-    "CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id",
-    "CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id",
-  ].join("\n"),
-  up: (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS reputation_entries (
-        id          TEXT    PRIMARY KEY,
-        reviewer_id TEXT    NOT NULL REFERENCES users(id),
-        target_id   TEXT    NOT NULL REFERENCES users(id),
-        rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-        comment     TEXT    CHECK (length(comment) <= 1000),
-        context_id  TEXT    NOT NULL REFERENCES contracts(id),
-        created_at  TEXT    NOT NULL,
-        UNIQUE(reviewer_id, target_id, context_id)
-      );
+  {
+    version: 4,
+    name: "create_reputation_entries",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS reputation_entries (",
+      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id",
+      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS reputation_entries (
+          id          TEXT    PRIMARY KEY,
+          reviewer_id TEXT    NOT NULL REFERENCES users(id),
+          target_id   TEXT    NOT NULL REFERENCES users(id),
+          rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+          comment     TEXT    CHECK (length(comment) <= 1000),
+          context_id  TEXT    NOT NULL REFERENCES contracts(id),
+          created_at  TEXT    NOT NULL,
+          UNIQUE(reviewer_id, target_id, context_id)
+        );
 
-      CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id
-        ON reputation_entries(target_id);
+        CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id
+          ON reputation_entries(target_id);
 
-      CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
-        ON reputation_entries(context_id);
-    `);
+        CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
+          ON reputation_entries(context_id);
+      `);
+    },
   },
-},
-{
-  version: 5,
-  name: "create_transactions_table",
-  checksumSource: [
-    "CREATE TABLE IF NOT EXISTS transactions (",
-  ].join("\n"),
-  up: (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS transactions (
-        hash            TEXT    PRIMARY KEY,
-        status          TEXT    NOT NULL,
-        receipt         TEXT,
-        last_checked_at TEXT,
-        retry_count     INTEGER NOT NULL DEFAULT 0
-      );
-    `);
-  },
-},
+  {
+    version: 5,
+    name: "create_transactions_table",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS transactions (",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS transactions (
+          hash            TEXT    PRIMARY KEY,
+          status          TEXT    NOT NULL,
+          receipt         TEXT,
+          last_checked_at TEXT,
+          retry_count     INTEGER NOT NULL DEFAULT 0
         );
       `);
     },
@@ -163,6 +157,22 @@ MIGRATIONS.push({
       CREATE INDEX IF NOT EXISTS idx_deployment_history_env_from ON deployment_history(environment_from);
       CREATE INDEX IF NOT EXISTS idx_deployment_history_env_to ON deployment_history(environment_to);
     `);
+  },
+});
+
+// Version 7: add password_hash and refresh_token_hash columns to users
+MIGRATIONS.push({
+  version: 7,
+  name: "add_auth_columns_to_users",
+  up: (db) => {
+    const columns = db.pragma("table_info(users)") as Array<{ name: string }>;
+    const names = columns.map((c) => c.name);
+    if (!names.includes("password_hash")) {
+      db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+    }
+    if (!names.includes("refresh_token_hash")) {
+      db.exec("ALTER TABLE users ADD COLUMN refresh_token_hash TEXT");
+    }
   },
 });
 
@@ -219,8 +229,9 @@ function assertMigrationsAreValid(migrations: Migration[]): void {
  * migration instead of changing an existing one.
  */
 export function computeMigrationChecksum(migration: Migration): string {
+  const source = migration.checksumSource ?? migration.up.toString();
   return createHash("sha256")
-    .update(`${migration.version}\n${migration.name}\n${migration.up.toString()}`)
+    .update(`${migration.version}\n${migration.name}\n${source}`)
     .digest("hex");
 }
 
@@ -249,13 +260,28 @@ function verifyAppliedMigrations(
     }
 
     if (applied.checksum === null) {
+      // Backfill: row predates checksum tracking
       db.prepare<[string, number]>(
         "UPDATE schema_version SET checksum = ? WHERE version = ?"
       ).run(expectedChecksum, applied.version);
       applied.checksum = expectedChecksum;
+      continue;
     }
 
     if (applied.checksum !== expectedChecksum) {
+      // Allow upgrade from up.toString() checksum to checksumSource checksum
+      if (migration.checksumSource !== undefined) {
+        const legacyChecksum = createHash("sha256")
+          .update(`${migration.version}\n${migration.name}\n${migration.up.toString()}`)
+          .digest("hex");
+        if (applied.checksum === legacyChecksum) {
+          db.prepare<[string, number]>(
+            "UPDATE schema_version SET checksum = ? WHERE version = ?"
+          ).run(expectedChecksum, applied.version);
+          applied.checksum = expectedChecksum;
+          continue;
+        }
+      }
       throw new Error(
         `Applied migration ${applied.version} checksum mismatch; refusing to start`
       );

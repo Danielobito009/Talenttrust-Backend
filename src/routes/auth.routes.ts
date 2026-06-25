@@ -1,56 +1,120 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
+import { validateSchema } from '../middleware/validate.middleware';
+import { AuthService } from '../services/auth.service';
+import { getDb } from '../db/database';
+import { requireAuth } from '../middleware/authorization';
+import type { AuthenticatedRequest } from '../lib/types';
 
 const router = Router();
 const strictLimiter = createRateLimiter(rateLimitConfig.strict);
 
+// ─── Zod schemas ─────────────────────────────────────────────────────────────
+
+const loginSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(1),
+  }),
+});
+
+const registerSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    password: z.string().min(8),
+    username: z.string().min(2).max(50),
+    role: z.enum(['client', 'freelancer', 'both']).optional(),
+  }),
+});
+
+const refreshSchema = z.object({
+  body: z.object({
+    refreshToken: z.string().min(1),
+  }),
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function getAuthService(): AuthService {
+  return new AuthService(getDb());
+}
+
+function authError(res: Response, status: number, code: string, message: string): Response {
+  return res.status(status).json({ error: { code, message } });
+}
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
 router.post(
   '/login',
   strictLimiter,
+  validateSchema(loginSchema),
   async (req: Request, res: Response) => {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    try {
+      const { email, password } = req.body as { email: string; password: string };
+      const tokens = await getAuthService().login(email, password);
+      return res.status(200).json(tokens);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'invalid_credentials') {
+        return authError(res, 401, 'invalid_credentials', 'Invalid email or password.');
+      }
+      return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
     }
-
-    return res.status(501).json({ error: 'Login not yet implemented' });
   }
 );
 
 router.post(
   '/register',
   strictLimiter,
+  validateSchema(registerSchema),
   async (req: Request, res: Response) => {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    try {
+      const { email, password, username, role } = req.body as {
+        email: string;
+        password: string;
+        username: string;
+        role?: string;
+      };
+      const tokens = await getAuthService().register(email, password, username, role);
+      return res.status(201).json(tokens);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'duplicate_email') {
+        // Generic message — no user-enumeration
+        return authError(res, 409, 'conflict', 'Registration failed. Please try again.');
+      }
+      return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
     }
-
-    return res.status(501).json({ error: 'Registration not yet implemented' });
   }
 );
 
 router.post(
   '/refresh',
   strictLimiter,
+  validateSchema(refreshSchema),
   async (req: Request, res: Response) => {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(400).json({ error: 'Refresh token is required' });
+    try {
+      const { refreshToken } = req.body as { refreshToken: string };
+      const tokens = await getAuthService().refresh(refreshToken);
+      return res.status(200).json(tokens);
+    } catch {
+      return authError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
     }
-
-    return res.status(501).json({ error: 'Token refresh not yet implemented' });
   }
 );
 
 router.post(
   '/logout',
   strictLimiter,
-  async (_req: Request, res: Response) => {
+  requireAuth,
+  (req: Request, res: Response) => {
+    const userId = (req as AuthenticatedRequest).user?.id;
+    if (userId) {
+      getAuthService().logout(userId);
+    }
     return res.status(200).json({ message: 'Logged out successfully' });
   }
 );

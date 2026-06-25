@@ -306,3 +306,187 @@ describe("redisProbe", () => {
     expect(mockClient.disconnect).toHaveBeenCalled();
   });
 });
+
+// ── queueProbe ────────────────────────────────────────────────────────────────
+
+jest.mock("../queue/queue-manager");
+
+import { QueueManager } from "../queue/queue-manager";
+import type { QueueHealthInfo } from "../queue/queue-manager";
+import { JobType } from "../queue/types";
+import { queueProbe, circuitBreakerProbe } from "./probes";
+
+const MockQueueManager = QueueManager as jest.Mocked<typeof QueueManager>;
+
+function makeQueueInfo(overrides: Partial<QueueHealthInfo> = {}): QueueHealthInfo {
+  return {
+    jobType: JobType.EMAIL_NOTIFICATION,
+    isInitialized: true,
+    waiting: 0,
+    active: 0,
+    completed: 0,
+    failed: 0,
+    delayed: 0,
+    paused: false,
+    ...overrides,
+  };
+}
+
+describe("queueProbe", () => {
+  const ORIGINAL = process.env;
+
+  beforeEach(() => {
+    process.env = { ...ORIGINAL };
+    jest.resetAllMocks();
+  });
+
+  afterEach(() => {
+    process.env = ORIGINAL;
+  });
+
+  it("returns ok when all queues are healthy", async () => {
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockResolvedValue([makeQueueInfo()]),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe("queue");
+    expect(result.detail).toBeUndefined();
+    expect(typeof result.latencyMs).toBe("number");
+  });
+
+  it("returns not ok when failed job count exceeds threshold", async () => {
+    process.env.QUEUE_FAILED_THRESHOLD = "5";
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockResolvedValue([makeQueueInfo({ failed: 10 })]),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("failed jobs");
+  });
+
+  it("returns not ok when waiting backlog exceeds threshold", async () => {
+    process.env.QUEUE_BACKLOG_THRESHOLD = "10";
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockResolvedValue([makeQueueInfo({ waiting: 50 })]),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("waiting jobs");
+  });
+
+  it("returns not ok on timeout", async () => {
+    process.env.QUEUE_PROBE_TIMEOUT_MS = "1";
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockImplementation(
+        () => new Promise((resolve) => setTimeout(resolve, 60_000))
+      ),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("timeout");
+  });
+
+  it("handles thrown errors from getHealth", async () => {
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockRejectedValue(new Error("Redis down")),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("Redis down");
+  });
+
+  it("handles non-Error thrown values", async () => {
+    MockQueueManager.getInstance = jest.fn().mockReturnValue({
+      getHealth: jest.fn().mockRejectedValue("raw error"),
+    });
+
+    const result = await queueProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBe("unknown error");
+  });
+});
+
+// ── circuitBreakerProbe ───────────────────────────────────────────────────────
+
+jest.mock("../circuit-breaker/registry");
+
+import { circuitBreakerRegistry } from "../circuit-breaker/registry";
+
+const mockRegistry = circuitBreakerRegistry as jest.Mocked<typeof circuitBreakerRegistry>;
+
+describe("circuitBreakerProbe", () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it("returns ok when no breakers are open", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([
+      { name: "stellar", state: "CLOSED", failureCount: 0, successCount: 0, lastFailureTime: null, config: { failureThreshold: 5, successThreshold: 1, timeoutMs: 30000 } },
+    ]);
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe("circuit-breaker");
+    expect(result.detail).toBeUndefined();
+  });
+
+  it("returns not ok when one breaker is open", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([
+      { name: "stellar", state: "OPEN", failureCount: 5, successCount: 0, lastFailureTime: Date.now(), config: { failureThreshold: 5, successThreshold: 1, timeoutMs: 30000 } },
+    ]);
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("1 breaker(s) open");
+  });
+
+  it("counts multiple open breakers", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([
+      { name: "stellar", state: "OPEN", failureCount: 5, successCount: 0, lastFailureTime: Date.now(), config: { failureThreshold: 5, successThreshold: 1, timeoutMs: 30000 } },
+      { name: "redis", state: "OPEN", failureCount: 3, successCount: 0, lastFailureTime: Date.now(), config: { failureThreshold: 5, successThreshold: 1, timeoutMs: 30000 } },
+    ]);
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("2 breaker(s) open");
+  });
+
+  it("returns ok when no breakers are registered", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([]);
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(true);
+  });
+
+  it("returns ok for HALF_OPEN breakers (not fully open)", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([
+      { name: "stellar", state: "HALF_OPEN", failureCount: 0, successCount: 0, lastFailureTime: null, config: { failureThreshold: 5, successThreshold: 1, timeoutMs: 30000 } },
+    ]);
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(true);
+  });
+
+  it("handles thrown errors from getAll", async () => {
+    mockRegistry.getAll = jest.fn().mockImplementation(() => {
+      throw new Error("registry failure");
+    });
+
+    const result = await circuitBreakerProbe();
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("registry failure");
+  });
+
+  it("returns a numeric latencyMs", async () => {
+    mockRegistry.getAll = jest.fn().mockReturnValue([]);
+
+    const result = await circuitBreakerProbe();
+    expect(typeof result.latencyMs).toBe("number");
+  });
+});
