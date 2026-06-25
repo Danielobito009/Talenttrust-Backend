@@ -1,4 +1,4 @@
-import { EnvSecret, SecretsManager, secretsManager, initializeSecrets } from './secrets';
+import { EnvSecret, RotatingSecret, SecretsManager, secretsManager, initializeSecrets } from './secrets';
 
 describe('Secrets Management', () => {
   const originalEnv = process.env;
@@ -52,6 +52,51 @@ describe('Secrets Management', () => {
       process.env.ROTATING_SECRET = 'version2';
       await secret.refresh();
       expect(secret.get()).toBe('version2');
+    });
+  });
+
+  describe('RotatingSecret', () => {
+    it('should initialize with the provider value and return it synchronously', async () => {
+      let providerCalled = false;
+      const provider = async () => {
+        providerCalled = true;
+        return 'initial-secret';
+      };
+
+      const secret = new RotatingSecret({ provider, name: 'TEST_ROTATING' });
+      await secret.refresh();
+
+      expect(providerCalled).toBe(true);
+      expect(secret.get()).toBe('initial-secret');
+    });
+
+    it('should update the cached value on refresh', async () => {
+      const values = ['v1', 'v2'];
+      const provider = jest.fn(async () => values.shift() ?? 'v2');
+      const secret = new RotatingSecret({ provider, name: 'REFRESH_SECRET' });
+
+      await secret.refresh();
+      expect(secret.get()).toBe('v1');
+
+      await secret.refresh();
+      expect(secret.get()).toBe('v2');
+      expect(provider).toHaveBeenCalledTimes(2);
+    });
+
+    it('should retain the prior value when refresh fails', async () => {
+      let callCount = 0;
+      const provider = jest.fn(async () => {
+        callCount += 1;
+        if (callCount === 1) return 'current-value';
+        throw new Error('provider unavailable');
+      });
+      const secret = new RotatingSecret({ provider, name: 'FAILOVER_SECRET' });
+
+      await secret.refresh();
+      expect(secret.get()).toBe('current-value');
+
+      await expect(secret.refresh()).resolves.toBeUndefined();
+      expect(secret.get()).toBe('current-value');
     });
   });
 

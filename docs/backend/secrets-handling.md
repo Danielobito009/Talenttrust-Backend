@@ -72,6 +72,29 @@ import { secretsManager } from '../config/secrets';
 const secretValue = secretsManager.getValue('MY_NEW_SECRET');
 ```
 
+## Rotating Secrets
+
+To add a secret backed by an asynchronous rotation source, use `RotatingSecret`:
+
+```typescript
+import { secretsManager, RotatingSecret } from '../config/secrets';
+
+const secretProvider = async (): Promise<string> => {
+  // Fetch from an async source such as AWS Secrets Manager, HashiCorp Vault, etc.
+  return await fetchLatestSecretValue();
+};
+
+const rotatingJwtSecret = new RotatingSecret({
+  provider: secretProvider,
+  name: 'JWT_SECRET',
+  refreshIntervalMs: 60_000, // optional background refresh every minute
+});
+
+secretsManager.register('JWT_SECRET', rotatingJwtSecret);
+```
+
+Then refresh secrets with `secretsManager.refreshAll()` to update all registered secrets at once.
+
 ## Testing
 
 Comprehensive tests are located in `src/config/secrets.test.ts`. These tests cover:

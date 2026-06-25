@@ -1,4 +1,5 @@
 import * as dotenv from 'dotenv';
+import { logger } from '../logger';
 
 // Load .env file
 dotenv.config();
@@ -150,3 +151,86 @@ export function initializeSecrets(): void {
 
 // Self-initialize on module load for convenience, but can be called again if needed.
 initializeSecrets();
+
+/**
+ * RotatingSecret fetches a secret value from an asynchronous provider and
+ * caches the last successful value.  It exposes the same synchronous
+ * `get()` contract as other `Secret` implementations while making
+ * `refresh()` perform the real asynchronous fetch.
+ *
+ * On refresh errors the previous value is retained (fail-safe) and no
+ * secret material is ever written to logs. A refresh interval can be
+ * supplied to enable background polling.
+ */
+export class RotatingSecret<T = string> implements Secret<T> {
+  private value?: T;
+  private readonly provider: () => Promise<string>;
+  private readonly transform?: (val: string) => T;
+  private timer?: NodeJS.Timeout;
+  private readonly name?: string;
+
+  /**
+   * @param opts.provider Async function that returns the raw secret string.
+   * @param opts.defaultValue Optional default value used until the first
+   *                          successful fetch.
+   * @param opts.transform Optional transform from raw string to `T`.
+   * @param opts.refreshIntervalMs Optional background refresh interval.
+   * @param opts.name Optional name used in non-sensitive logs/messages.
+   */
+  constructor(opts: {
+    provider: () => Promise<string>;
+    defaultValue?: T;
+    transform?: (val: string) => T;
+    refreshIntervalMs?: number;
+    name?: string;
+  }) {
+    this.provider = opts.provider;
+    this.transform = opts.transform;
+    this.name = opts.name;
+    if (opts.defaultValue !== undefined) {
+      this.value = opts.defaultValue;
+    }
+
+    if (opts.refreshIntervalMs && opts.refreshIntervalMs > 0) {
+      this.timer = setInterval(() => {
+        // fire-and-forget background refresh; failures are tolerated
+        this.refresh().catch(() => {
+          // Intentionally quiet: refresh() already logs a minimal message
+        });
+      }, opts.refreshIntervalMs);
+    }
+  }
+
+  get(): T {
+    if (this.value === undefined) {
+      throw new Error(`Configuration Error: Missing rotated secret${this.name ? ` \"${this.name}\"` : ''}`);
+    }
+    return this.value as T;
+  }
+
+  async refresh(): Promise<void> {
+    try {
+      const raw = await this.provider();
+      const newVal = this.transform ? this.transform(raw) : (raw as unknown as T);
+      this.value = newVal;
+    } catch (err) {
+      // Do not log secret values. Log only that refresh failed and include
+      // the secret name for context. Preserve previous value (fail-safe).
+      try {
+        logger.warn('SecretsManager: failed to refresh secret', { name: this.name });
+      } catch {
+        // Swallow any logging errors; we must not surface secrets here.
+      }
+    }
+  }
+
+  /**
+   * Stop any background refresh timer. Useful for tests/cleanup.
+   */
+  stopAutoRefresh(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+}
