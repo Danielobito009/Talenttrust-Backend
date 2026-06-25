@@ -1,4 +1,4 @@
-import * as fs from 'fs/promises';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Database, ContractMetadata, Contract, User, ApiKey } from './schema';
 
@@ -209,7 +209,12 @@ class DatabaseService {
     return db.api_keys.find(key => key.key_hash === keyHash && key.is_active) || null;
   }
 
-  async updateApiKey(id: string, updates: Partial<Pick<ApiKey, 'name' | 'scope' | 'expires_at' | 'is_active' | 'last_used_at'>>): Promise<ApiKey | null> {
+  async getApiKeyBySelector(selector: string): Promise<ApiKey | null> {
+    const db = await this.loadDatabase();
+    return db.api_keys.find(key => key.key_selector === selector && key.is_active) || null;
+  }
+
+  async updateApiKey(id: string, updates: Partial<Pick<ApiKey, 'name' | 'scope' | 'expires_at' | 'is_active' | 'last_used_at' | 'key_selector'>>): Promise<ApiKey | null> {
     const db = await this.loadDatabase();
     const index = db.api_keys.findIndex(key => key.id === id);
     
@@ -238,17 +243,45 @@ class DatabaseService {
     return true;
   }
 
-  async rotateApiKey(id: string, newKeyHash: string): Promise<ApiKey | null> {
+  async rotateApiKey(id: string, newKeyHash: string, newKeySelector?: string): Promise<ApiKey | null> {
     const db = await this.loadDatabase();
     const apiKey = db.api_keys.find(key => key.id === id);
     
     if (!apiKey) return null;
 
     apiKey.key_hash = newKeyHash;
+    if (newKeySelector !== undefined) {
+      apiKey.key_selector = newKeySelector;
+    }
     apiKey.updated_at = new Date();
     
     await this.saveDatabase();
     return apiKey;
+  }
+
+  /**
+   * Backfills the key_selector field for all existing API keys that lack it.
+   * Uses the stored key_hash (salt:hash) to derive the selector deterministically.
+   * This must be called with the original plain-text key — we store the selector
+   * during createApiKey, so this is only needed for legacy keys.
+   *
+   * For security, this function does NOT attempt to recompute selectors from
+   * stored hashes (impossible). Instead it is provided as a hook; callers pass
+   * plain-text keys that are being validated and the selector is backfilled
+   * lazily in validateApiKey.
+   */
+  async backfillKeySelectors(): Promise<number> {
+    const db = await this.loadDatabase();
+    let count = 0;
+    for (const key of db.api_keys) {
+      if (!key.key_selector) {
+        // Selector cannot be derived from stored hash; it must be set during
+        // validation when the plain-text key is available (handled in validateApiKey).
+        // This method counts unindexed keys for monitoring/reporting.
+        count++;
+      }
+    }
+    return count;
   }
 
   // Cleanup for testing

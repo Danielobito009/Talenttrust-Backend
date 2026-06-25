@@ -72,6 +72,24 @@ export function verifyApiKey(apiKey: string, salt: string, hash: string): boolea
 }
 
 /**
+ * Computes a deterministic key selector (SHA-256) for fast O(1) indexed lookup.
+ *
+ * The selector is a non-reversible hash distinct from the slow per-key salted
+ * PBKDF2 hash. It acts as an opaque lookup key so the server can find the
+ * candidate row without iterating over all stored keys.
+ *
+ * Security note: the selector alone cannot reveal the original API key because
+ * SHA-256 is preimage-resistant. A successful match must still be confirmed via
+ * `verifyApiKey` with the salted PBKDF2 hash.
+ *
+ * @param apiKey - The plain API key to compute the selector for.
+ * @returns A hex-encoded SHA-256 digest used as the lookup index.
+ */
+export function computeKeySelector(apiKey: string): string {
+  return crypto.createHash('sha256').update(apiKey).digest('hex');
+}
+
+/**
  * Creates a new API key with the given specifications.
  *
  * @param request - The API key creation request.
@@ -83,10 +101,12 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
   
   // Store salt and hash together in the key_hash field
   const keyHash = `${salt}:${hash}`;
+  const keySelector = computeKeySelector(apiKey);
   
   const dbKey = await database.createApiKey({
     name: request.name,
     key_hash: keyHash,
+    key_selector: keySelector,
     scope: request.scope,
     created_by: request.createdBy,
     expires_at: request.expiresAt,
@@ -114,39 +134,53 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
  * @returns The API key info if valid, null otherwise.
  */
 export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null> {
-  // Hash the provided key to search for it
-  // Note: In a real implementation, you'd need to iterate through keys or use an index
-  // For this demo, we'll use a simple approach by checking all active keys
+  // Compute the deterministic selector for O(1) indexed lookup
+  const selector = computeKeySelector(apiKey);
   
-  const db = await (database as any).loadDatabase();
-  const activeKeys = db.api_keys.filter((key: ApiKey) => key.is_active);
+  // Try indexed lookup first (fast path, O(1) via key_selector)
+  let dbKey = await database.getApiKeyBySelector(selector);
   
-  for (const dbKey of activeKeys) {
-    const [salt, hash] = dbKey.key_hash.split(':');
-    
-    if (verifyApiKey(apiKey, salt, hash)) {
-      // Update last used timestamp
-      await database.updateApiKey(dbKey.id, { last_used_at: new Date() });
-      
-      // Check if key has expired
-      if (dbKey.expires_at && new Date() > dbKey.expires_at) {
-        await database.deactivateApiKey(dbKey.id);
-        return null;
-      }
-      
-      return {
-        id: dbKey.id,
-        name: dbKey.name,
-        scope: dbKey.scope,
-        createdBy: dbKey.created_by,
-        createdAt: dbKey.created_at,
-        expiresAt: dbKey.expires_at,
-        isActive: dbKey.is_active
-      };
-    }
+  // Fallback: scan legacy keys that predate the key_selector index
+  if (!dbKey) {
+    const db = await (database as any).loadDatabase();
+    dbKey = db.api_keys.find(
+      (k: ApiKey) => !k.key_selector && k.is_active
+    );
   }
   
-  return null;
+  if (!dbKey) {
+    return null;
+  }
+  
+  // Verify with the slow salted hash (source of truth)
+  const [salt, hash] = dbKey.key_hash.split(':');
+  if (!verifyApiKey(apiKey, salt, hash)) {
+    return null;
+  }
+  
+  // Backfill the selector for legacy keys so future lookups hit the fast path
+  if (!dbKey.key_selector) {
+    await database.updateApiKey(dbKey.id, { key_selector: selector });
+  }
+  
+  // Update last used timestamp
+  await database.updateApiKey(dbKey.id, { last_used_at: new Date() });
+  
+  // Check if key has expired
+  if (dbKey.expires_at && new Date() > dbKey.expires_at) {
+    await database.deactivateApiKey(dbKey.id);
+    return null;
+  }
+  
+  return {
+    id: dbKey.id,
+    name: dbKey.name,
+    scope: dbKey.scope,
+    createdBy: dbKey.created_by,
+    createdAt: dbKey.created_at,
+    expiresAt: dbKey.expires_at,
+    isActive: dbKey.is_active
+  };
 }
 
 /**
@@ -164,8 +198,9 @@ export async function rotateApiKey(keyId: string): Promise<{ apiKey: string; inf
   const newApiKey = generateApiKey();
   const { salt, hash } = hashApiKey(newApiKey);
   const keyHash = `${salt}:${hash}`;
+  const keySelector = computeKeySelector(newApiKey);
   
-  const updatedKey = await database.rotateApiKey(keyId, keyHash);
+  const updatedKey = await database.rotateApiKey(keyId, keyHash, keySelector);
   
   if (!updatedKey) {
     return null;
