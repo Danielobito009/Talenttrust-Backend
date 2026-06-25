@@ -21,7 +21,7 @@ import Database from "./betterSqlite3";
 import path from "path";
 import { runMigrations } from "./migrations";
 
-let instance: typeof Database | null = null;
+let instance: ReturnType<typeof Database> | null = null;
 
 /**
  * Returns the shared database instance, creating it on first call.
@@ -29,7 +29,7 @@ let instance: typeof Database | null = null;
  * @param dbPath - Optional path override (used by tests to pass ':memory:').
  *                 If omitted, falls back to DB_PATH env var or 'talenttrust.db'.
  */
-export function getDb(dbPath?: string): typeof Database {
+export function getDb(dbPath?: string): ReturnType<typeof Database> {
   if (instance) return instance;
 
   const resolvedPath =

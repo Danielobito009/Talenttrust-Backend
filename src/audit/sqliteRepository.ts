@@ -37,7 +37,7 @@ function toAuditEntry(row: AuditRow): AuditEntry {
 }
 
 export class SqliteAuditRepository implements AuditLogRepository {
-  constructor(private readonly db: typeof Database) {
+  constructor(private readonly db: ReturnType<typeof Database>) {
     this.initSchema();
   }
 

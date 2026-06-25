@@ -120,3 +120,25 @@ function canonicalize(value: JsonValue): string {
   const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
   return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`).join(',')}}`;
 }
+
+// Simple IdempotencyLayer facade used by DLQ replay endpoints and tests.
+// Implemented as an in-memory set of processed event IDs. Tests may mock
+// these methods as needed.
+export const IdempotencyLayer = (() => {
+  const processed = new Set<string>();
+
+  return {
+    async isEventProcessed(eventId: string): Promise<boolean> {
+      return processed.has(eventId);
+    },
+
+    async markEventProcessed(eventId: string): Promise<void> {
+      processed.add(eventId);
+    },
+
+    // Expose a clear method for tests
+    async _clear(): Promise<void> {
+      processed.clear();
+    },
+  };
+})();

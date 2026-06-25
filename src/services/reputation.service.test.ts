@@ -51,7 +51,7 @@ function sha256(text: string): string {
  * @param freelancerId - User who plays the freelancer role.
  */
 function insertContract(
-  db: typeof Database,
+  db: ReturnType<typeof Database>,
   id: string,
   clientId: string = REVIEWER_ID,
   freelancerId: string = TARGET_ID,
@@ -66,7 +66,7 @@ function insertContract(
 /**
  * Returns the total number of reputation_entries rows currently in the DB.
  */
-function reputationRowCount(db: typeof Database): number {
+function reputationRowCount(db: ReturnType<typeof Database>): number {
   const row = db.prepare<[], { c: number }>('SELECT COUNT(*) AS c FROM reputation_entries').get();
   return row?.c ?? 0;
 }
@@ -76,7 +76,7 @@ function reputationRowCount(db: typeof Database): number {
 // ---------------------------------------------------------------------------
 
 describe('ReputationService.createRating — anti-abuse protections', () => {
-  let db: typeof Database;
+  let db: ReturnType<typeof Database>;
 
   beforeAll(() => {
     // Use a fresh in-memory SQLite instance with full schema migrations.

@@ -10,9 +10,9 @@ interface NotificationRow {
 }
 
 export class NotificationRepository {
-  private db: Database;
+  private db: ReturnType<typeof Database>;
 
-  constructor(db: typeof Database) {
+  constructor(db: ReturnType<typeof Database>) {
     this.db = db;
   }
 

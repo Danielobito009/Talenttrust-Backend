@@ -84,7 +84,7 @@ function incrementDLQMetric(operation: DLQOperation): void {
 }
 
 class WebhookDLQStorage {
-  private db: typeof Database;
+  private db: ReturnType<typeof Database>;
   private config: DLQConfig;
 
   constructor(dbPath?: string, config: Partial<DLQConfig> = {}) {
