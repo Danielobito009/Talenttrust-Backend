@@ -68,71 +68,74 @@ const MIGRATIONS: Migration[] = [
   },
   {
     version: 3,
-    name: "create_reputation_entries",
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS reputation_entries (
-          id          TEXT    PRIMARY KEY,
-          reviewer_id TEXT    NOT NULL REFERENCES users(id),
-          target_id   TEXT    NOT NULL REFERENCES users(id),
-          rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-          comment     TEXT    CHECK (length(comment) <= 1000),
-          context_id  TEXT    NOT NULL REFERENCES contracts(id),
-          created_at  TEXT    NOT NULL,
-          UNIQUE(reviewer_id, target_id, context_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id
-          ON reputation_entries(target_id);
-
-        CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
-          ON reputation_entries(context_id);
-      `);
-    },
+{
+  version: 3,
+  name: "create_smart_contract_events_table",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS smart_contract_events (",
+    "UNIQUE(contractId, eventType, idempotencyKey)",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS smart_contract_events (
+        eventId TEXT PRIMARY KEY,
+        contractId TEXT NOT NULL,
+        eventType TEXT NOT NULL,
+        idempotencyKey TEXT,
+        payload TEXT,
+        timestamp TEXT NOT NULL,
+        UNIQUE(contractId, eventType, idempotencyKey)
+      );
+    `);
   },
-  {
-    version: 4,
-    name: "create_reputation_entries",
-    checksumSource: [
-      "CREATE TABLE IF NOT EXISTS reputation_entries (",
-      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id",
-      "CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id",
-    ].join("\n"),
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS reputation_entries (
-          id          TEXT    PRIMARY KEY,
-          reviewer_id TEXT    NOT NULL REFERENCES users(id),
-          target_id   TEXT    NOT NULL REFERENCES users(id),
-          rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-          comment     TEXT    CHECK (length(comment) <= 1000),
-          context_id  TEXT    NOT NULL REFERENCES contracts(id),
-          created_at  TEXT    NOT NULL,
-          UNIQUE(reviewer_id, target_id, context_id)
-        );
+},
+{
+  version: 4,
+  name: "create_reputation_entries",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS reputation_entries (",
+    "CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id",
+    "CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS reputation_entries (
+        id          TEXT    PRIMARY KEY,
+        reviewer_id TEXT    NOT NULL REFERENCES users(id),
+        target_id   TEXT    NOT NULL REFERENCES users(id),
+        rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        comment     TEXT    CHECK (length(comment) <= 1000),
+        context_id  TEXT    NOT NULL REFERENCES contracts(id),
+        created_at  TEXT    NOT NULL,
+        UNIQUE(reviewer_id, target_id, context_id)
+      );
 
-        CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id
-          ON reputation_entries(target_id);
+      CREATE INDEX IF NOT EXISTS idx_reputation_entries_target_id
+        ON reputation_entries(target_id);
 
-        CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
-          ON reputation_entries(context_id);
-      `);
-    },
+      CREATE INDEX IF NOT EXISTS idx_reputation_entries_context_id
+        ON reputation_entries(context_id);
+    `);
   },
-  {
-    version: 5,
-    name: "create_transactions_table",
-    checksumSource: [
-      "CREATE TABLE IF NOT EXISTS transactions (",
-    ].join("\n"),
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS transactions (
-          hash            TEXT    PRIMARY KEY,
-          status          TEXT    NOT NULL,
-          receipt         TEXT,
-          last_checked_at TEXT,
-          retry_count     INTEGER NOT NULL DEFAULT 0
+},
+{
+  version: 5,
+  name: "create_transactions_table",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS transactions (",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        hash            TEXT    PRIMARY KEY,
+        status          TEXT    NOT NULL,
+        receipt         TEXT,
+        last_checked_at TEXT,
+        retry_count     INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
+},
         );
       `);
     },
