@@ -146,6 +146,25 @@ export const envSchema = z.object({
 
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
+
+  // Redis-backed Shared Rate Limiter Store Configuration
+  RATE_LIMIT_STORE: z.enum(['memory', 'redis'])
+    .default('memory'),
+
+  REDIS_HOST: z.string().optional(),
+  REDIS_PORT: z.string()
+    .optional()
+    .transform((val) => val === undefined || val === '' ? undefined : parseInt(val, 10))
+    .pipe(z.number().int().min(1).max(65535).optional()),
+  REDIS_PASSWORD: z.string().optional(),
+}).refine(data => {
+  if (data.RATE_LIMIT_STORE === 'redis' && !data.REDIS_HOST) {
+    return false;
+  }
+  return true;
+}, {
+  message: "REDIS_HOST is required when RATE_LIMIT_STORE is set to 'redis'",
+  path: ['REDIS_HOST']
 });
 
 
