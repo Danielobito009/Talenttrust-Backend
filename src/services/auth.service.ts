@@ -164,7 +164,7 @@ export class AuthService {
     const valid = verifyPassword(password, storedHash);
 
     if (!row || !valid) {
-      const err = new Error("Invalid email or password.");
+      const err = new Error("Authentication failed.");
       (err as NodeJS.ErrnoException).code = "invalid_credentials";
       throw err;
     }

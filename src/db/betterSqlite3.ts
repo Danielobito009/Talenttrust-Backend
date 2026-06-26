@@ -231,6 +231,11 @@ try {
   class MockDatabase {
     open: boolean;
     private _pragmaValues: Record<string, any> = {};
+    private state: Record<string, any[]> = {
+      users: [],
+      contracts: [],
+      reputation_entries: [],
+    };
 
     constructor(_path: string) {
       this.open = true;
@@ -288,7 +293,7 @@ try {
             const tableState = this.state[table];
             if (tableState) {
               if (whereSql) {
-                const rowsToKeep = tableState.filter(row => {
+                const rowsToKeep = tableState.filter((row: any) => {
                   const paramIndex = { value: 0 };
                   const conditions = splitByAnd(whereSql);
                   for (const cond of conditions) {
@@ -354,11 +359,11 @@ try {
                 if (cleanUpper.includes('IGNORE')) {
                   let exists = false;
                   if (tableName === 'users') {
-                    exists = tableState.some(u => u.id === newRow.id || u.username === newRow.username || u.email === newRow.email);
+                    exists = tableState.some((u: any) => u.id === newRow.id || u.username === newRow.username || u.email === newRow.email);
                   } else if (tableName === 'reputation_entries') {
-                    exists = tableState.some(r => r.reviewer_id === newRow.reviewer_id && r.target_id === newRow.target_id && r.context_id === newRow.context_id);
+                    exists = tableState.some((r: any) => r.reviewer_id === newRow.reviewer_id && r.target_id === newRow.target_id && r.context_id === newRow.context_id);
                   } else if (tableName === 'contracts') {
-                    exists = tableState.some(c => c.id === newRow.id);
+                    exists = tableState.some((c: any) => c.id === newRow.id);
                   }
                   if (exists) continue;
                 }
@@ -373,7 +378,6 @@ try {
     transaction(fn: (...args: any[]) => any) {
       return fn;
     }
-    exec(_sql: string) {}
     close() { this.open = false; }
   }
   Database = MockDatabase as any;

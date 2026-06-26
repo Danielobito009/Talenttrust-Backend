@@ -69,22 +69,23 @@ const MIGRATIONS: Migration[] = [
   {
     version: 3,
     name: "create_smart_contract_events_table",
-  checksumSource: [
-    "CREATE TABLE IF NOT EXISTS smart_contract_events (",
-    "UNIQUE(contractId, eventType, idempotencyKey)",
-  ].join("\n"),
-  up: (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS smart_contract_events (
-        eventId TEXT PRIMARY KEY,
-        contractId TEXT NOT NULL,
-        eventType TEXT NOT NULL,
-        idempotencyKey TEXT,
-        payload TEXT,
-        timestamp TEXT NOT NULL,
-        UNIQUE(contractId, eventType, idempotencyKey)
-      );
-    `);
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS smart_contract_events (",
+      "UNIQUE(contractId, eventType, idempotencyKey)",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS smart_contract_events (
+          eventId TEXT PRIMARY KEY,
+          contractId TEXT NOT NULL,
+          eventType TEXT NOT NULL,
+          idempotencyKey TEXT,
+          payload TEXT,
+          timestamp TEXT NOT NULL,
+          UNIQUE(contractId, eventType, idempotencyKey)
+        );
+      `);
+    },
   },
   {
     version: 4,
@@ -115,25 +116,24 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
-},
-{
-  version: 5,
-  name: "create_transactions_table",
-  checksumSource: [
-    "CREATE TABLE IF NOT EXISTS transactions (",
-  ].join("\n"),
-  up: (db) => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS transactions (
-        hash            TEXT    PRIMARY KEY,
-        status          TEXT    NOT NULL,
-        receipt         TEXT,
-        last_checked_at TEXT,
-        retry_count     INTEGER NOT NULL DEFAULT 0
-      );
-    `);
+  {
+    version: 5,
+    name: "create_transactions_table",
+    checksumSource: [
+      "CREATE TABLE IF NOT EXISTS transactions (",
+    ].join("\n"),
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS transactions (
+          hash            TEXT    PRIMARY KEY,
+          status          TEXT    NOT NULL,
+          receipt         TEXT,
+          last_checked_at TEXT,
+          retry_count     INTEGER NOT NULL DEFAULT 0
+        );
+      `);
+    },
   },
-},
 ];
 
 // Version 6: deployment_history table
@@ -160,9 +160,62 @@ MIGRATIONS.push({
   },
 });
 
-// Version 7: retention storage tables for the SqliteStorageProvider
+// Version 7: add password_hash and refresh_token_hash columns for authentication
 MIGRATIONS.push({
   version: 7,
+  name: "add_auth_columns_to_users",
+  up: (db) => {
+    const columns = db.pragma("table_info(users)") as Array<{ name: string }>;
+    const hasPasswordHash = columns.some((col) => col.name === "password_hash");
+    const hasRefreshTokenHash = columns.some((col) => col.name === "refresh_token_hash");
+
+    if (!hasPasswordHash || !hasRefreshTokenHash) {
+      // Backup existing data
+      const users = db.prepare("SELECT * FROM users").all() as Array<Record<string, unknown>>;
+
+      // Drop old table
+      db.exec("DROP TABLE IF EXISTS users");
+
+      // Create new table with auth columns
+      db.exec(`
+        CREATE TABLE users (
+          id              TEXT    PRIMARY KEY,
+          username        TEXT    NOT NULL UNIQUE,
+          email           TEXT    NOT NULL UNIQUE,
+          role            TEXT    NOT NULL DEFAULT 'client'
+                                  CHECK (role IN ('client', 'freelancer', 'both')),
+          password_hash   TEXT,
+          refresh_token_hash TEXT,
+          created_at      TEXT    NOT NULL
+        )
+      `);
+
+      // Restore data if it existed
+      if (users.length > 0) {
+        const insertStmt = db.prepare(`
+          INSERT INTO users (id, username, email, role, password_hash, refresh_token_hash, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const user of users) {
+          insertStmt.run(
+            user.id,
+            user.username,
+            user.email,
+            user.role,
+            user.password_hash ?? null,
+            user.refresh_token_hash ?? null,
+            user.created_at
+          );
+        }
+      }
+    }
+  },
+});
+
+// Version 8: retention storage tables for the SqliteStorageProvider
+MIGRATIONS.push({
+  version: 8,
   name: "create_retention_storage_tables",
   up: (db) => {
     // The retention module uses two independent provider instances (local + archive),
@@ -279,7 +332,7 @@ export function computeLegacyMigrationChecksum(migration: Migration): string | n
     return null;
   }
   return createHash("sha256")
-    .update(`${migration.version}\n${migration.name}\n${source}`)
+    .update(`${migration.version}\n${migration.name}\n${migration.up.toString()}`)
     .digest("hex");
 }
 
