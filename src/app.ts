@@ -33,7 +33,6 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';
 import { getDb } from './db/database';
-import { eventIngestionService } from './events/registry';
 
 interface AppFactoryOptions {
   includeTerminalHandlers?: boolean;

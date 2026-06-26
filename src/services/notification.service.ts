@@ -1,7 +1,9 @@
 import { KeyEscrowEvent, EmailPayload, WebPayload } from '../types/notification.types';
-import { NotificationTransport, ConsoleTransport, NotificationResult } from './notification.transport';
+import { NotificationTransport, ConsoleTransport, NotificationResult, SMTPTransport, SESTransport, SendGridTransport } from './notification.transport';
 import { NotificationRepository } from '../repositories/notificationRepository';
 import { getDb } from '../db/database';
+import { validateEnv } from '../config/env.schema';
+import { logger } from '../logger';
 
 /**
  * @title NotificationService
@@ -14,24 +16,56 @@ export class NotificationService {
   private emailTransport: NotificationTransport;
   private webTransport: NotificationTransport;
   private repo: NotificationRepository;
+
   /**
-   * @notice Sends an email notification to the specified recipient.
-   * @dev In production, this would integrate with an SMTP service (e.g. SendGrid, AWS SES).
-   * Note on security: `to` address must be validated/sanitized before passing to the real transport
-   * to prevent header injection or SSRF using email providers.
-   * Rate limiting should also be implemented per recipient email to prevent email bombing.
-   * 
-   * @param to The recipient's email address.
-   * @param event The Key Escrow event triggering this notification.
-   * @param data Optional context data for the email template.
-   * @return A boolean indicating whether the email was queued/sent successfully.
+   * Creates an email transport based on the environment configuration.
    */
+  private static createEmailTransport(): NotificationTransport {
+    const env = validateEnv();
+
+    if (env.EMAIL_PROVIDER === 'smtp') {
+      if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_FROM) {
+        logger.warn('[NotificationService] SMTP configuration incomplete, falling back to console');
+        return ConsoleTransport;
+      }
+      return new SMTPTransport({
+        host: env.SMTP_HOST,
+        port: env.SMTP_PORT,
+        user: env.SMTP_USER,
+        password: env.SMTP_PASSWORD,
+        from: env.SMTP_FROM,
+        secure: env.SMTP_SECURE,
+      });
+    } else if (env.EMAIL_PROVIDER === 'ses') {
+      if (!env.SMTP_FROM) {
+        logger.warn('[NotificationService] SES configuration incomplete, falling back to console');
+        return ConsoleTransport;
+      }
+      return new SESTransport({
+        accessKeyId: env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        region: env.AWS_REGION,
+        from: env.SMTP_FROM,
+      });
+    } else if (env.EMAIL_PROVIDER === 'sendgrid') {
+      if (!env.SMTP_FROM) {
+        logger.warn('[NotificationService] SendGrid configuration incomplete, falling back to console');
+        return ConsoleTransport;
+      }
+      return new SendGridTransport({
+        apiKey: env.SENDGRID_API_KEY,
+        from: env.SMTP_FROM,
+      });
+    }
+    return ConsoleTransport;
+  }
+
   constructor(options?: {
     emailTransport?: NotificationTransport;
     webTransport?: NotificationTransport;
     repo?: NotificationRepository;
   }) {
-    this.emailTransport = options?.emailTransport ?? ConsoleTransport;
+    this.emailTransport = options?.emailTransport ?? NotificationService.createEmailTransport();
     this.webTransport = options?.webTransport ?? ConsoleTransport;
     this.repo = options?.repo ?? new NotificationRepository(getDb(process.env['DB_PATH'] ?? ':memory:'));
   }
@@ -51,6 +85,7 @@ export class NotificationService {
   public async sendEmail(to: string, event: KeyEscrowEvent, data?: any): Promise<NotificationResult> {
     try {
       if (!this.isValidEmail(to)) {
+        logger.warn('[NotificationService:Email] Invalid email address');
         throw new Error('Invalid email address');
       }
 
@@ -63,16 +98,24 @@ export class NotificationService {
       if (this.emailTransport.sendEmail) {
         const res = await this.emailTransport.sendEmail(payload);
         if (!res.success) {
-          console.error(`[NotificationService:Email] Transport failed for ${to}`, res.message);
+          logger.error('[NotificationService:Email] Transport failed', {
+            toRedacted: `${to.slice(0, 2)}***@${to.split('@')[1]}`,
+            message: res.message,
+          });
         }
         return res;
       }
 
       // Fallback behaviour
-      console.log(`[NotificationService:Email] Sending mail to ${payload.to}`, payload);
+      logger.info('[NotificationService:Email] No email transport configured, using console', {
+        toRedacted: `${to.slice(0, 2)}***@${to.split('@')[1]}`,
+      });
       return { success: true };
     } catch (error) {
-      console.error(`[NotificationService:Email] Failed to send email for event ${event}`, (error as Error).message);
+      logger.error('[NotificationService:Email] Failed to send email', {
+        event,
+        err: error,
+      });
       return { success: false, message: (error as Error).message };
     }
   }
@@ -95,6 +138,7 @@ export class NotificationService {
   public async sendWebNotification(userId: string, event: KeyEscrowEvent, data?: any): Promise<NotificationResult> {
     try {
       if (!userId || /[\r\n]/.test(userId)) {
+        logger.warn('[NotificationService:Web] Invalid user ID');
         throw new Error('Invalid user ID');
       }
 
@@ -108,21 +152,31 @@ export class NotificationService {
       try {
         this.repo.saveWebNotification(payload.userId, payload.title, payload.message);
       } catch (err: unknown) {
-        console.error('[NotificationService:Web] Failed to persist web notification', (err as Error).message);
+        logger.error('[NotificationService:Web] Failed to persist web notification', {
+          err,
+        });
       }
 
       if (this.webTransport.sendWebNotification) {
         const res = await this.webTransport.sendWebNotification(payload);
         if (!res.success) {
-          console.error(`[NotificationService:Web] Transport failed for ${userId}`, res.message);
+          logger.error('[NotificationService:Web] Transport failed', {
+            userId,
+            message: res.message,
+          });
         }
         return res;
       }
 
-      console.log(`[NotificationService:Web] Sending web alert to ${payload.userId}`, payload);
+      logger.info('[NotificationService:Web] No web transport configured, using console', {
+        userId,
+      });
       return { success: true };
     } catch (error) {
-      console.error(`[NotificationService:Web] Failed to send web alert for event ${event}`, (error as Error).message);
+      logger.error('[NotificationService:Web] Failed to send web alert', {
+        event,
+        err: error,
+      });
       return { success: false, message: (error as Error).message };
     }
   }

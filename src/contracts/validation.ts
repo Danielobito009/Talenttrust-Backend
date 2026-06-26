@@ -7,6 +7,7 @@ type ValidationResult =
 const EVENT_TYPES = new Set<ContractEvent['type']>([
   'CONTRACT_CREATED',
   'CONTRACT_FUNDED',
+  'MILESTONE_RELEASED',
   'CONTRACT_COMPLETED',
   'CONTRACT_CANCELLED',
 ]);

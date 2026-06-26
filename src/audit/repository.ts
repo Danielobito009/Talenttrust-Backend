@@ -1,6 +1,6 @@
 import path from 'path';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
-import { AuditStore, auditStore } from './store';
+import { auditStore } from './store';
 import { SqliteAuditRepository } from './sqliteRepository';
 import * as Database from '../db/betterSqlite3';
 

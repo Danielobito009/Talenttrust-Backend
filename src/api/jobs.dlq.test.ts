@@ -162,14 +162,14 @@ describe('DLQ Capacity and Overflow', () => {
     // Add 3 entries to reach capacity
     const id1 = await storage.addEntry('webhook-1', 'https://a.com', { seq: 1 }, 1, 'Error 1');
     const id2 = await storage.addEntry('webhook-2', 'https://b.com', { seq: 2 }, 1, 'Error 2');
-    const id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
+    const _id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
 
     // Verify all 3 entries exist
     const statsBefore = await storage.getStats();
     expect(statsBefore.pending).toBe(3);
 
     // Add a 4th entry - should trigger eviction of oldest (id1)
-    const id4 = await storage.addEntry('webhook-4', 'https://d.com', { seq: 4 }, 1, 'Error 4');
+    const _id4 = await storage.addEntry('webhook-4', 'https://d.com', { seq: 4 }, 1, 'Error 4');
 
     // Verify oldest entry was evicted
     expect(storage.getEntry(id1)).toBeNull();
@@ -186,7 +186,7 @@ describe('DLQ Capacity and Overflow', () => {
     // Fill to capacity
     const id1 = await storage.addEntry('webhook-1', 'https://a.com', { seq: 1 }, 1, 'Error 1');
     const id2 = await storage.addEntry('webhook-2', 'https://b.com', { seq: 2 }, 1, 'Error 2');
-    const id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
+    const _id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
 
     // Add multiple more entries
     await storage.addEntry('webhook-4', 'https://d.com', { seq: 4 }, 1, 'Error 4');
@@ -219,13 +219,13 @@ describe('DLQ Capacity and Overflow', () => {
     // Fill to capacity
     const id1 = await storage.addEntry('webhook-1', 'https://a.com', { seq: 1 }, 1, 'Error 1');
     const id2 = await storage.addEntry('webhook-2', 'https://b.com', { seq: 2 }, 1, 'Error 2');
-    const id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
+    const _id3 = await storage.addEntry('webhook-3', 'https://c.com', { seq: 3 }, 1, 'Error 3');
 
     // Mark the oldest as replayed
     storage.markReplayed(id1);
 
     // Add another entry - should evict id2 (oldest pending), not id1 (replayed)
-    const id4 = await storage.addEntry('webhook-4', 'https://d.com', { seq: 4 }, 1, 'Error 4');
+    const _id4 = await storage.addEntry('webhook-4', 'https://d.com', { seq: 4 }, 1, 'Error 4');
 
     // id1 should still exist (replayed, not pending)
     expect(storage.getEntry(id1)).not.toBeNull();
