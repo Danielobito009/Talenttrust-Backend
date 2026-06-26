@@ -2,7 +2,7 @@ import { ReputationProfile } from '../types/reputation';
 import { ReputationRepository, ReputationEntry } from '../repositories/reputationRepository';
 import { auditService } from '../audit/service';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
-import Database from '../db/betterSqlite3';
+import type BetterSqlite3 from 'better-sqlite3';
 import { createHash } from 'crypto';
 import { validateEnv } from '../config/env.schema';
 
@@ -80,7 +80,7 @@ export class ReputationService {
    * Initialize the service with a database connection.
    * Must be called once during application startup.
    */
-  public static initialize(db: Database.Database): void {
+  public static initialize(db: BetterSqlite3.Database): void {
     this.repository = new ReputationRepository(db);
   }
 

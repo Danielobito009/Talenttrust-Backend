@@ -14,10 +14,10 @@ export interface SmartContractEvent {
 }
 
 import { getDb } from '../db/database';
-import Database from 'better-sqlite3';
+import type BetterSqlite3 from 'better-sqlite3';
 
 export class EventIndexerService {
-  private db: Database.Database;
+  private db: BetterSqlite3.Database;
 
   constructor() {
     this.db = getDb();

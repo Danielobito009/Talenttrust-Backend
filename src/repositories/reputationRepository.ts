@@ -12,7 +12,7 @@
  *  - UNIQUE constraint prevents duplicate ratings at DB level
  */
 
-import Database from '../db/betterSqlite3';
+import type BetterSqlite3 from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { ConflictError } from '../errors/appError';
 
@@ -66,9 +66,9 @@ function toReputationEntry(row: ReputationRow): ReputationEntry {
  * Instantiate with an open Database instance.
  */
 export class ReputationRepository {
-  private db: Database.Database;
+  private db: BetterSqlite3.Database;
 
-  constructor(db: Database.Database) {
+  constructor(db: BetterSqlite3.Database) {
     this.db = db;
   }
 

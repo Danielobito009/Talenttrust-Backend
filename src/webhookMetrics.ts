@@ -116,8 +116,6 @@ export function createWebhookMetrics(registry: Registry) {
     registers: [registry],
   });
 
-
-
   return {
     deliveryAttemptsTotal,
     deliveryLatencySeconds,

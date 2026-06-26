@@ -1,6 +1,5 @@
-import { createWriteStream, createReadStream } from 'fs';
-import { mkdir, mkdtemp, rm } from 'fs/promises';
-import { pipeline } from 'stream/promises';
+import { createWriteStream, createReadStream, promises as fsp } from 'fs';
+import { pipeline } from 'stream';
 import { Readable } from 'stream';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -32,9 +31,9 @@ export class AuditExportService {
   }
 
   async createNdjsonExport(query: AuditQuery = {}): Promise<AuditExportResult> {
-    await mkdir(this.exportRoot, { recursive: true });
+    await fsp.mkdir(this.exportRoot, { recursive: true });
 
-    const exportDir = await mkdtemp(path.join(this.exportRoot, 'audit-export-'));
+    const exportDir = await fsp.mkdtemp(path.join(this.exportRoot, 'audit-export-'));
     this.assertPathWithinRoot(exportDir);
 
     const fileName = `audit-log-${new Date().toISOString().replace(/[:.]/g, '-')}.ndjson`;
@@ -53,7 +52,7 @@ export class AuditExportService {
     await pipeline(source, writer);
 
     const cleanup = async (): Promise<void> => {
-      await rm(exportDir, { recursive: true, force: true });
+      await fsp.rm(exportDir, { recursive: true, force: true });
     };
 
     return {

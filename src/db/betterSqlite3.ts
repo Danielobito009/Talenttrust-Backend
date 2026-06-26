@@ -229,338 +229,49 @@ try {
   };
 
   class MockDatabase {
-    private state: Record<string, any[]>;
-    private dbPath: string;
-    constructor(dbPath: string) {
-      this.dbPath = dbPath;
-      this.state = getDbState(dbPath);
+    open: boolean;
+    private _pragmaValues: Record<string, any> = {};
+
+    constructor(_path: string) {
+      this.open = true;
     }
+
     pragma(stmt: string, ..._args: any[]) {
-      const clean = stmt.replace(/\s+/g, ' ').trim().toLowerCase();
-      if (clean.includes('table_info')) {
-        const match = clean.match(/table_info\s*\(\s*(\w+)\s*\)/i);
-        const tableName = match ? match[1] : '';
-        if (tableName === 'contracts') {
-          return [
-            { name: 'id' },
-            { name: 'title' },
-            { name: 'client_id' },
-            { name: 'freelancer_id' },
-            { name: 'amount' },
-            { name: 'status' },
-            { name: 'version' },
-            { name: 'created_at' }
-          ];
+      const arg = _args[0];
+      // pragma("name", { simple: true }) — getter
+      if (typeof arg === 'object' && arg !== null && (arg as any).simple) {
+        const key = stmt.split('=')[0].trim().toLowerCase();
+        if (key in this._pragmaValues) {
+          return this._pragmaValues[key];
         }
+        // Defaults
+        if (stmt.includes('journal_mode')) return 'memory';
+        if (stmt.includes('synchronous')) return 1;
+        if (stmt.includes('busy_timeout')) return this._pragmaValues['busy_timeout'] ?? 5000;
+        if (stmt.includes('foreign_keys')) return 1;
+        return undefined;
+      }
+      // pragma("setting = value") — setter
+      const parts = stmt.split('=');
+      if (parts.length === 2) {
+        this._pragmaValues[parts[0]!.trim().toLowerCase()] = parts[1]!.trim();
+        // Convert numeric strings
+        const num = Number(parts[1]!.trim());
+        if (!isNaN(num)) this._pragmaValues[parts[0]!.trim().toLowerCase()] = num;
+      }
+      // pragma("table_info(...)") — returns schema array
+      if (stmt.includes('table_info')) {
         return [{ name: 'id' }, { name: 'version' }];
       }
-      if (clean.includes('journal_mode')) return 'wal';
-      if (clean.includes('synchronous')) return 1;
-      if (clean.includes('busy_timeout')) return 5000;
-      if (clean.includes('foreign_keys')) return 1;
       return [];
     }
-    prepare(sql: string) {
-      const cleanSql = sql.replace(/\s+/g, ' ').trim();
-      const cleanUpper = cleanSql.toUpperCase();
 
-      if (cleanUpper === 'BEGIN IMMEDIATE' || cleanUpper === 'BEGIN EXCLUSIVE' || cleanUpper === 'BEGIN') {
-        return { run: () => ({ changes: 0 }), get: () => undefined, all: () => [] };
-      }
-      if (cleanUpper === 'COMMIT') {
-        return { run: () => ({ changes: 0 }), get: () => undefined, all: () => [] };
-      }
-      if (cleanUpper === 'ROLLBACK') {
-        return { run: () => ({ changes: 0 }), get: () => undefined, all: () => [] };
-      }
-
-      if (cleanUpper.startsWith('SELECT')) {
-        const fromMatch = cleanSql.match(/FROM\s+(\w+)/i);
-        const tableName = fromMatch ? fromMatch[1].toLowerCase() : '';
-        const whereMatch = cleanSql.match(/WHERE\s+([\s\S]+?)(?:ORDER\s+BY|LIMIT|OFFSET|$)/i);
-        const whereSql = whereMatch ? whereMatch[1] : '';
-        const orderByMatch = cleanSql.match(/ORDER\s+BY\s+([\s\S]+?)(?:LIMIT|OFFSET|$)/i);
-        const orderBySql = orderByMatch ? orderByMatch[1] : '';
-        const limitMatch = cleanSql.match(/LIMIT\s+(\d+|\?)/i);
-        const limitVal = limitMatch ? limitMatch[1] : '';
-        const offsetMatch = cleanSql.match(/OFFSET\s+(\d+|\?)/i);
-        const offsetVal = offsetMatch ? offsetMatch[1] : '';
-
-        if (cleanSql.includes('sqlite_master')) {
-          const nameMatch = cleanSql.match(/name\s*=\s*'([^']+)'/i);
-          const name = nameMatch ? nameMatch[1] : '';
-          return {
-            get: () => ({ name }),
-            all: () => [{ name }]
-          };
-        }
-
-        const runSelect = (params: any[]) => {
-          let rows = [...(this.state[tableName] || [])];
-          if (whereSql) {
-            rows = filterRows(rows, whereSql, params);
-          }
-          if (orderBySql) {
-            const orderFields = orderBySql.split(',').map(o => o.trim().split(/\s+/));
-            rows.sort((a, b) => {
-              for (const [field, dir] of orderFields) {
-                const valA = a[field.toLowerCase()] !== undefined ? a[field.toLowerCase()] : a[toCamelCase(field)];
-                const valB = b[field.toLowerCase()] !== undefined ? b[field.toLowerCase()] : b[toCamelCase(field)];
-                let cmp = 0;
-                if (typeof valA === 'string' && typeof valB === 'string') {
-                  cmp = valA.localeCompare(valB);
-                } else {
-                  cmp = valA < valB ? -1 : valA > valB ? 1 : 0;
-                }
-                if (dir && dir.toUpperCase() === 'DESC') {
-                  cmp = -cmp;
-                }
-                if (cmp !== 0) return cmp;
-              }
-              return 0;
-            });
-          }
-
-          const beforeLimitSql = cleanSql.split(/LIMIT/i)[0];
-          const numParamsBeforeLimit = (beforeLimitSql.match(/\?/g) || []).length;
-          let limit = limitVal ? (limitVal === '?' ? params[numParamsBeforeLimit] : parseInt(limitVal, 10)) : undefined;
-          let offset = 0;
-          if (offsetVal === '?') {
-            const hasLimitParam = limitVal === '?';
-            offset = params[numParamsBeforeLimit + (hasLimitParam ? 1 : 0)];
-          } else if (offsetVal) {
-            offset = parseInt(offsetVal, 10);
-          }
-
-          if (offset) {
-            rows = rows.slice(offset);
-          }
-          if (limit !== undefined && limit !== null) {
-            rows = rows.slice(0, limit);
-          }
-
-          const selectFieldsPart = cleanSql.match(/SELECT\s+(.+?)\s+FROM/i);
-          const fieldsPart = selectFieldsPart ? selectFieldsPart[1].trim() : '*';
-
-          if (fieldsPart.toUpperCase().startsWith('COUNT(*)')) {
-            const aliasMatch = fieldsPart.match(/AS\s+(\w+)/i);
-            const alias = aliasMatch ? aliasMatch[1] : 'count';
-            return [{ [alias]: rows.length }];
-          }
-
-          if (fieldsPart.toUpperCase().startsWith('MAX(')) {
-            const fieldMatch = fieldsPart.match(/MAX\s*\(\s*(\w+)\s*\)/i);
-            const field = fieldMatch ? fieldMatch[1].toLowerCase() : '';
-            const aliasMatch = fieldsPart.match(/AS\s+(\w+)/i);
-            const alias = aliasMatch ? aliasMatch[1] : 'max';
-            let maxVal = null;
-            for (const r of rows) {
-              const val = r[field];
-              if (val !== undefined && val !== null) {
-                if (maxVal === null || val > maxVal) maxVal = val;
-              }
-            }
-            return [{ [alias]: maxVal }];
-          }
-
-          if (fieldsPart.toUpperCase().startsWith('SUM(')) {
-            const fieldMatch = fieldsPart.match(/SUM\s*\(\s*(\w+)\s*\)/i);
-            const field = fieldMatch ? fieldMatch[1].toLowerCase() : '';
-            const aliasMatch = fieldsPart.match(/AS\s+(\w+)/i);
-            const alias = aliasMatch ? aliasMatch[1] : 'sum';
-            let sumVal = 0;
-            for (const r of rows) {
-              const val = r[field];
-              if (typeof val === 'number') sumVal += val;
-            }
-            return [{ [alias]: sumVal }];
-          }
-
-          if (fieldsPart === '1') {
-            return [{ '1': 1 }];
-          }
-
-          if (fieldsPart !== '*' && !fieldsPart.includes('COUNT') && !fieldsPart.includes('MAX') && !fieldsPart.includes('SUM')) {
-            const selectedFields = fieldsPart.split(',').map(f => {
-              const parts = f.trim().split(/\s+AS\s+/i);
-              const orig = parts[0].trim().toLowerCase();
-              const alias = parts[1] ? parts[1].trim() : orig;
-              return { orig, alias };
-            });
-            return rows.map(r => {
-              const projected: any = {};
-              for (const { orig, alias } of selectedFields) {
-                projected[alias] = r[orig] !== undefined ? r[orig] : r[toCamelCase(orig)];
-              }
-              return projected;
-            });
-          }
-
-          return rows;
-        };
-
-        return {
-          get: (...params: any[]) => {
-            const result = runSelect(params);
-            return result[0];
-          },
-          all: (...params: any[]) => {
-            return runSelect(params);
-          },
-          iterate: function* (...params: any[]) {
-            const results = runSelect(params);
-            for (const r of results) {
-              yield r;
-            }
-          }
-        };
-      }
-
-      if (cleanUpper.startsWith('INSERT')) {
-        const insertMatch = cleanSql.match(/INSERT\s*(?:OR\s+\w+)?\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/i);
-        if (insertMatch) {
-          const tableName = insertMatch[1].toLowerCase();
-          const cols = insertMatch[2].split(',').map(c => c.trim().toLowerCase());
-          const valuesPart = insertMatch[3].trim();
-          return {
-            run: (...args: any[]) => {
-              const rawValues = splitSqlValues(valuesPart);
-              let argIndex = 0;
-              const finalValues = rawValues.map(v => {
-                if (v === '?') return args[argIndex++];
-                return parseSqlValue(v);
-              });
-              const newRow: any = {};
-              for (let i = 0; i < cols.length; i++) {
-                newRow[cols[i]] = finalValues[i];
-              }
-
-              const tableState = this.state[tableName] || [];
-              if (cleanUpper.includes('IGNORE')) {
-                let exists = false;
-                if (tableName === 'users') {
-                  exists = tableState.some(u => u.id === newRow.id || u.username === newRow.username || u.email === newRow.email);
-                } else if (tableName === 'reputation_entries') {
-                  exists = tableState.some(r => r.reviewer_id === newRow.reviewer_id && r.target_id === newRow.target_id && r.context_id === newRow.context_id);
-                } else if (tableName === 'contracts') {
-                  exists = tableState.some(c => c.id === newRow.id);
-                }
-                if (exists) {
-                  return { changes: 0, lastInsertRowid: 0 };
-                }
-              }
-
-              if (cleanUpper.includes('REPLACE')) {
-                if (tableName === 'idempotency_store') {
-                  const idx = tableState.findIndex(r => r.key === newRow.key);
-                  if (idx !== -1) tableState.splice(idx, 1);
-                }
-              }
-
-              tableState.push(newRow);
-              return { changes: 1, lastInsertRowid: tableState.length };
-            }
-          };
-        }
-      }
-
-      if (cleanUpper.startsWith('UPDATE')) {
-        const updateMatch = cleanSql.match(/UPDATE\s+(\w+)\s+SET\s+([\s\S]+?)\s+WHERE\s+([\s\S]+)$/i);
-        if (updateMatch) {
-          const tableName = updateMatch[1].toLowerCase();
-          const setSql = updateMatch[2].trim();
-          const whereSql = updateMatch[3].trim();
-          return {
-            run: (...args: any[]) => {
-              const numSetParams = (setSql.match(/\?/g) || []).length;
-              const setArgs = args.slice(0, numSetParams);
-              const whereArgs = args.slice(numSetParams);
-              const tableState = this.state[tableName] || [];
-              const matchedRows = filterRows(tableState, whereSql, whereArgs);
-              if (matchedRows.length === 0) {
-                return { changes: 0 };
-              }
-
-              const assignments = splitSqlValues(setSql);
-              let changesCount = 0;
-              for (const row of matchedRows) {
-                let setArgIdx = 0;
-                for (const assignment of assignments) {
-                  const parts = assignment.split('=');
-                  const col = parts[0].trim().toLowerCase();
-                  const valExpression = parts[1].trim();
-                  let val: any;
-                  if (valExpression === '?') {
-                    val = setArgs[setArgIdx++];
-                  } else if (valExpression.toUpperCase().startsWith('COALESCE(')) {
-                    const inner = valExpression.slice(9, -1);
-                    const innerTerms = inner.split(',').map(t => t.trim());
-                    let coalesceVal = null;
-                    for (const term of innerTerms) {
-                      let termVal: any;
-                      if (term === '?') {
-                        termVal = setArgs[setArgIdx++];
-                      } else {
-                        termVal = row[term.toLowerCase()] !== undefined ? row[term.toLowerCase()] : row[toCamelCase(term)];
-                      }
-                      if (termVal !== null && termVal !== undefined) {
-                        coalesceVal = termVal;
-                        break;
-                      }
-                    }
-                    val = coalesceVal;
-                  } else if (valExpression.toLowerCase() === col + ' + 1') {
-                    val = (row[col] || 0) + 1;
-                  } else {
-                    val = parseSqlValue(valExpression);
-                  }
-
-                  if (row[col] !== undefined) {
-                    row[col] = val;
-                  } else if (row[toCamelCase(col)] !== undefined) {
-                    row[toCamelCase(col)] = val;
-                  } else {
-                    row[col] = val;
-                  }
-                }
-                changesCount++;
-              }
-              return { changes: changesCount };
-            }
-          };
-        }
-      }
-
-      if (cleanUpper.startsWith('DELETE')) {
-        const deleteMatch = cleanSql.match(/DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+([\s\S]+))?/i);
-        if (deleteMatch) {
-          const tableName = deleteMatch[1].toLowerCase();
-          const whereSql = deleteMatch[2];
-          return {
-            run: (...args: any[]) => {
-              const tableState = this.state[tableName];
-              if (!tableState) return { changes: 0 };
-              if (!whereSql) {
-                const count = tableState.length;
-                tableState.length = 0;
-                return { changes: count };
-              }
-              const matchedRows = filterRows(tableState, whereSql, args);
-              const remainingRows = tableState.filter(row => !matchedRows.includes(row));
-              const deletedCount = tableState.length - remainingRows.length;
-              this.state[tableName] = remainingRows;
-              return { changes: deletedCount };
-            }
-          };
-        }
-      }
-
+    prepare(_sql: string) {
       return {
         run: (..._args: any[]) => ({ lastInsertRowid: 0, changes: 0 }),
         get: (..._args: any[]) => undefined,
         all: (..._args: any[]) => [],
         iterate: function* () {},
-        exec: () => {},
       };
     }
     exec(sql: string) {
@@ -662,7 +373,8 @@ try {
     transaction(fn: (...args: any[]) => any) {
       return fn;
     }
-    close() {}
+    exec(_sql: string) {}
+    close() { this.open = false; }
   }
   Database = MockDatabase as any;
 }

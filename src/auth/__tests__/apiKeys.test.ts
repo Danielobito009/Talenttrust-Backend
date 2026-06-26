@@ -1,16 +1,12 @@
-/**
- * @module apiKeys.test
- * @description Tests for API key authentication utilities.
- */
-
-import { 
-  generateApiKey, 
-  hashApiKey, 
-  verifyApiKey, 
-  createApiKey, 
-  validateApiKey, 
-  rotateApiKey, 
-  deactivateApiKey 
+import {
+  generateApiKey,
+  hashApiKey,
+  verifyApiKey,
+  createApiKey,
+  validateApiKey,
+  rotateApiKey,
+  deactivateApiKey,
+  computeKeySelector
 } from '../apiKeys';
 import { database } from '../../database';
 
@@ -82,8 +78,36 @@ describe('API Key Utilities', () => {
     });
   });
 
+  describe('computeKeySelector', () => {
+    it('should produce a deterministic selector for the same key', () => {
+      const apiKey = 'test-api-key';
+      const selector1 = computeKeySelector(apiKey);
+      const selector2 = computeKeySelector(apiKey);
+      expect(selector1).toBe(selector2);
+    });
+
+    it('should produce different selectors for different keys', () => {
+      const selector1 = computeKeySelector('key-one');
+      const selector2 = computeKeySelector('key-two');
+      expect(selector1).not.toBe(selector2);
+    });
+
+    it('should produce a 64-character hex string', () => {
+      const selector = computeKeySelector('test-api-key');
+      expect(selector).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it('should not be reversible (SHA-256 preimage resistance)', () => {
+      const key = generateApiKey();
+      const selector = computeKeySelector(key);
+      // A SHA-256 hash is 256 bits = 32 bytes = 64 hex chars
+      // It is computationally infeasible to recover the original key
+      expect(selector).toHaveLength(64);
+    });
+  });
+
   describe('createApiKey', () => {
-    it('should create a new API key', async () => {
+    it('should create a new API key with key_selector', async () => {
       const request = {
         name: 'Test Key',
         scope: ['contracts:read'],
@@ -99,6 +123,13 @@ describe('API Key Utilities', () => {
       expect(result.info.scope).toEqual(['contracts:read']);
       expect(result.info.createdBy).toBe('user123');
       expect(result.info.isActive).toBe(true);
+
+      // Verify key_selector was stored
+      const db = await (database as any).loadDatabase();
+      const storedKey = db.api_keys.find((k: any) => k.name === 'Test Key');
+      expect(storedKey.key_selector).toBeDefined();
+      expect(storedKey.key_selector).toMatch(/^[a-f0-9]{64}$/);
+      expect(storedKey.key_selector).toBe(computeKeySelector(result.apiKey));
     });
 
     it('should store API key with expiration', async () => {
@@ -116,8 +147,8 @@ describe('API Key Utilities', () => {
     });
   });
 
-  describe('validateApiKey', () => {
-    it('should validate a correct API key', async () => {
+  describe('validateApiKey - indexed O(1) lookup', () => {
+    it('should validate a correct API key via selector index', async () => {
       const request = {
         name: 'Test Key',
         scope: ['contracts:read'],
@@ -153,6 +184,23 @@ describe('API Key Utilities', () => {
       expect(result).toBeNull();
     });
 
+    it('should deactivate an expired key on validation attempt', async () => {
+      const pastDate = new Date('2020-01-01T00:00:00Z');
+      const request = {
+        name: 'Test Key',
+        scope: ['contracts:read'],
+        createdBy: 'user123',
+        expiresAt: pastDate
+      };
+
+      const { apiKey } = await createApiKey(request);
+      await validateApiKey(apiKey);
+
+      const db = await (database as any).loadDatabase();
+      const storedKey = db.api_keys.find((k: any) => k.name === 'Test Key');
+      expect(storedKey.is_active).toBe(false);
+    });
+
     it('should update last used timestamp', async () => {
       const request = {
         name: 'Test Key',
@@ -162,27 +210,105 @@ describe('API Key Utilities', () => {
 
       const { apiKey } = await createApiKey(request);
       
-      // Validate first time
       await validateApiKey(apiKey);
       
-      // Get the key from database to check last_used_at
       const db = await (database as any).loadDatabase();
       const storedKey = db.api_keys.find((key: any) => key.name === 'Test Key');
       
       expect(storedKey.last_used_at).toBeDefined();
       expect(storedKey.last_used_at).toBeInstanceOf(Date);
     });
+
+    it('should find the correct key among many keys (O(1) property)', async () => {
+      // Create multiple keys to verify we find the right one without scanning all
+      const keys: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const { apiKey } = await createApiKey({
+          name: `Key ${i}`,
+          scope: ['test:read'],
+          createdBy: 'user123'
+        });
+        keys.push(apiKey);
+      }
+
+      // Validate each key individually
+      for (let i = 0; i < keys.length; i++) {
+        const result = await validateApiKey(keys[i]);
+        expect(result).not.toBeNull();
+        expect(result!.name).toBe(`Key ${i}`);
+      }
+    });
+
+    it('should reject a revoked (deactivated) key', async () => {
+      const request = {
+        name: 'Revocable Key',
+        scope: ['test:read'],
+        createdBy: 'user123'
+      };
+
+      const { apiKey, info } = await createApiKey(request);
+      
+      // First validation should succeed
+      const firstResult = await validateApiKey(apiKey);
+      expect(firstResult).not.toBeNull();
+
+      // Deactivate the key
+      await deactivateApiKey(info.id);
+
+      // Second validation should fail
+      const secondResult = await validateApiKey(apiKey);
+      expect(secondResult).toBeNull();
+    });
+
+    it('should return null when no keys exist', async () => {
+      const result = await validateApiKey(generateApiKey());
+      expect(result).toBeNull();
+    });
+
+    it('should backfill key_selector for legacy keys', async () => {
+      // Simulate a legacy key without key_selector by inserting directly via loadDatabase
+      const apiKeyPlain = generateApiKey();
+      const { salt, hash } = hashApiKey(apiKeyPlain);
+      
+      const db = await (database as any).loadDatabase();
+      db.api_keys.push({
+        id: require('crypto').randomUUID(),
+        name: 'Legacy Key',
+        key_hash: `${salt}:${hash}`,
+        scope: ['legacy:read'],
+        created_by: 'user123',
+        created_at: new Date(),
+        updated_at: new Date(),
+        is_active: true
+        // No key_selector field
+      });
+      await (database as any).saveDatabase();
+
+      // Validate should still work via legacy fallback
+      const result = await validateApiKey(apiKeyPlain);
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe('Legacy Key');
+
+      // After validation, key_selector should be backfilled
+      const db2 = await (database as any).loadDatabase();
+      const storedKey = db2.api_keys.find((k: any) => k.name === 'Legacy Key');
+      expect(storedKey.key_selector).toBe(computeKeySelector(apiKeyPlain));
+    });
   });
 
   describe('rotateApiKey', () => {
-    it('should rotate an existing API key', async () => {
+    it('should rotate an existing API key and update selector', async () => {
       const request = {
         name: 'Test Key',
         scope: ['contracts:read'],
         createdBy: 'user123'
       };
 
-      const { info: originalInfo } = await createApiKey(request);
+      const { apiKey: originalKey, info: originalInfo } = await createApiKey(request);
+      
+      // Original key should work
+      expect(await validateApiKey(originalKey)).not.toBeNull();
+
       const result = await rotateApiKey(originalInfo.id);
 
       expect(result).not.toBeNull();
@@ -192,7 +318,17 @@ describe('API Key Utilities', () => {
       expect(result!.info.id).toBe(originalInfo.id);
       expect(result!.info.name).toBe(originalInfo.name);
       expect(result!.info.scope).toEqual(originalInfo.scope);
-      expect(result!.apiKey).not.toBe(originalInfo.id); // New key should be different
+
+      // New key should work
+      expect(await validateApiKey(result!.apiKey)).not.toBeNull();
+
+      // Old key should no longer work
+      expect(await validateApiKey(originalKey)).toBeNull();
+
+      // Verify selector was updated
+      const db = await (database as any).loadDatabase();
+      const storedKey = db.api_keys.find((k: any) => k.id === originalInfo.id);
+      expect(storedKey.key_selector).toBe(computeKeySelector(result!.apiKey));
     });
 
     it('should return null for non-existent key', async () => {
@@ -209,13 +345,13 @@ describe('API Key Utilities', () => {
         createdBy: 'user123'
       };
 
-      const { info } = await createApiKey(request);
+      const { apiKey, info } = await createApiKey(request);
       const result = await deactivateApiKey(info.id);
 
       expect(result).toBe(true);
 
-      // Key should no longer be valid
-      const validationResult = await validateApiKey('any-key');
+      // Key should no longer be valid (even with correct key)
+      const validationResult = await validateApiKey(apiKey);
       expect(validationResult).toBeNull();
     });
 

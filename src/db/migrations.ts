@@ -66,26 +66,25 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
-  {
-    version: 3,
-    name: "create_smart_contract_events_table",
-    checksumSource: [
-      "CREATE TABLE IF NOT EXISTS smart_contract_events (",
-      "UNIQUE(contractId, eventType, idempotencyKey)",
-    ].join("\n"),
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS smart_contract_events (
-          eventId TEXT PRIMARY KEY,
-          contractId TEXT NOT NULL,
-          eventType TEXT NOT NULL,
-          idempotencyKey TEXT,
-          payload TEXT,
-          timestamp TEXT NOT NULL,
-          UNIQUE(contractId, eventType, idempotencyKey)
-        );
-      `);
-    },
+{
+  version: 3,
+  name: "create_smart_contract_events_table",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS smart_contract_events (",
+    "UNIQUE(contractId, eventType, idempotencyKey)",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS smart_contract_events (
+        eventId TEXT PRIMARY KEY,
+        contractId TEXT NOT NULL,
+        eventType TEXT NOT NULL,
+        idempotencyKey TEXT,
+        payload TEXT,
+        timestamp TEXT NOT NULL,
+        UNIQUE(contractId, eventType, idempotencyKey)
+      );
+    `);
   },
   {
     version: 4,
@@ -116,24 +115,25 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
-  {
-    version: 5,
-    name: "create_transactions_table",
-    checksumSource: [
-      "CREATE TABLE IF NOT EXISTS transactions (",
-    ].join("\n"),
-    up: (db) => {
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS transactions (
-          hash            TEXT    PRIMARY KEY,
-          status          TEXT    NOT NULL,
-          receipt         TEXT,
-          last_checked_at TEXT,
-          retry_count     INTEGER NOT NULL DEFAULT 0
-        );
-      `);
-    },
+},
+{
+  version: 5,
+  name: "create_transactions_table",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS transactions (",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        hash            TEXT    PRIMARY KEY,
+        status          TEXT    NOT NULL,
+        receipt         TEXT,
+        last_checked_at TEXT,
+        retry_count     INTEGER NOT NULL DEFAULT 0
+      );
+    `);
   },
+},
 ];
 
 // Version 6: deployment_history table
@@ -160,19 +160,32 @@ MIGRATIONS.push({
   },
 });
 
-// Version 7: add password_hash and refresh_token_hash columns to users
+// Version 7: add key_selector to api_keys for O(1) indexed lookup
 MIGRATIONS.push({
   version: 7,
-  name: "add_auth_columns_to_users",
+  name: "add_key_selector_to_api_keys",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS api_keys (",
+    "key_selector TEXT NOT NULL UNIQUE",
+  ].join("\n"),
   up: (db) => {
-    const columns = db.pragma("table_info(users)") as Array<{ name: string }>;
-    const names = columns.map((c) => c.name);
-    if (!names.includes("password_hash")) {
-      db.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
-    }
-    if (!names.includes("refresh_token_hash")) {
-      db.exec("ALTER TABLE users ADD COLUMN refresh_token_hash TEXT");
-    }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id            TEXT    PRIMARY KEY,
+        name          TEXT    NOT NULL,
+        key_hash      TEXT    NOT NULL,
+        key_selector  TEXT    NOT NULL UNIQUE,
+        scope         TEXT    NOT NULL DEFAULT '[]',
+        created_by    TEXT    NOT NULL,
+        created_at    TEXT    NOT NULL,
+        updated_at    TEXT    NOT NULL,
+        expires_at    TEXT,
+        last_used_at  TEXT,
+        is_active     INTEGER NOT NULL DEFAULT 1
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_keys_key_selector
+        ON api_keys(key_selector);
+    `);
   },
 });
 

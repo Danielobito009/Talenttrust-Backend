@@ -15,7 +15,7 @@
  */
 
 import { Router, Request, Response, type RequestHandler } from 'express';
-import { pipeline } from 'stream/promises';
+import { pipeline } from 'stream';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService } from './exportService';
 import type { AuditAction, AuditQuery, AuditSeverity } from './types';

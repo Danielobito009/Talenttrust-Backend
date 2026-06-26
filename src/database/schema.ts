@@ -32,6 +32,7 @@ export interface ApiKey {
   id: string;
   name: string;
   key_hash: string;
+  key_selector?: string;
   scope: string[];
   created_by: string;
   created_at: Date;

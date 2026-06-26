@@ -21,10 +21,18 @@ export interface Transaction {
   retryCount: number;
 }
 
+interface TransactionsDbInterface {
+  get(hash: string): Transaction | undefined;
+  set(hash: string, tx: Transaction): TransactionsDbInterface;
+  delete(hash: string): boolean;
+  clear(): void;
+  values(): IterableIterator<Transaction>;
+}
+
 /**
  * SQLite-backed storage for transactions.
  */
-export const transactionsDb = {
+export const transactionsDb: TransactionsDbInterface = {
   get(hash: string): Transaction | undefined {
     const row = getDb().prepare('SELECT * FROM transactions WHERE hash = ?').get(hash) as any;
     if (!row) return undefined;
