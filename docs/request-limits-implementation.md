@@ -217,10 +217,27 @@ npm run test:watch
 - Test with different request sizes and content-types
 - Simulate rate limit scenarios with load testing
 
-## Future Considerations
+## Distributed Rate Limiting (Redis-backed Store)
 
-1. **Dynamic Limits**: Per-endpoint configuration
-2. **Rate Limiting Integration**: Combined validation
-3. **Advanced Content-Type**: Schema validation
-4. **Machine Learning**: Adaptive limit adjustment
-5. **Distributed Rate Limiting**: Redis-backed store for multi-replica deployments
+To support multi-replica or blue/green deployments where per-process rate limits would allow excessive total traffic, you can enable the Redis-backed shared store.
+
+### Environment Configuration
+
+```bash
+# Set store type ('memory' or 'redis')
+RATE_LIMIT_STORE=redis
+
+# Redis connection settings (shared with BullMQ)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=your-secret-password
+```
+
+### Upgrade Path and Trade-offs
+
+1. **Activation**: Change `RATE_LIMIT_STORE` to `redis` in your configuration environment. Ensure `REDIS_HOST` is populated (validation will fail-fast at startup if `redis` is enabled without a host).
+2. **Atomic Operations**: Refill and consumption checks run atomically inside Redis using Lua scripting. Keys use a dynamic TTL (`capacity / refillRate + 60` seconds) to prevent Redis memory leaks for inactive providers.
+3. **Resilience & Fallback Behavior**:
+   - If Redis connection/operation fails at runtime, the rate limiter **fails-closed and propagates the error**. This prevents silent splits where replicas continue using isolated memory mode while assuming cluster-wide limits are active.
+   - When `RATE_LIMIT_STORE` is omitted or explicitly set to `memory`, the limiter cleanly defaults to the local in-process memory store.
+
