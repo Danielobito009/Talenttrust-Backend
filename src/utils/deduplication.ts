@@ -39,10 +39,21 @@ export class DeduplicationManager {
   }
 
   /**
-   * Compares two payload hashes without data-dependent string comparison timing.
-   * @param actualHash The hash computed from the received payload
-   * @param expectedHash The hash stored for the idempotency key
-   * @returns True when both hashes are identical SHA-256 digests
+   * Compares two payload hashes using a timing‑safe constant‑time algorithm.
+   *
+   * The function first checks that the buffers are the same length. This guard
+   * prevents `crypto.timingSafeEqual` from being called with mismatched buffer
+   * lengths, which would otherwise throw. If the lengths differ we perform a
+   * self‑comparison (`timingSafeEqual(actual, actual)`) to keep the execution
+   * time consistent, then return `false`.
+   *
+   * When lengths match we delegate to `timingSafeEqual` which runs in constant
+   * time with respect to the contents of the buffers, providing resistance to
+   * timing‑attack leakage of hash equality.
+   *
+   * @param actualHash   The hash computed from the received payload.
+   * @param expectedHash The hash stored for the idempotency key.
+   * @returns `true` when both hashes are identical SHA-256 digests.
    */
   static comparePayloadHashes(actualHash: string, expectedHash: string): boolean {
     const actualBuffer = Buffer.from(actualHash, 'hex');
