@@ -10,8 +10,10 @@
  * enough tokens have refilled — deliveries are **paced/queued, never dropped**.
  *
  * ## State
- * Buckets can be held in-process (a plain `Map`) or in a shared Redis store
- * for cluster-wide enforcement.
+ * Buckets are held in the shared in-process `RateLimitStore`. In a blue/green
+ * or multi-replica deployment each process maintains its own independent bucket
+ * state unless the store interface is backed by Redis or another shared
+ * implementation.
  *
  * ## Configuration (environment variables)
  * | Variable                        | Default | Description                              |
@@ -33,310 +35,20 @@
 
 import Redis from 'ioredis';
 import { recordThrottled } from './webhookMetrics';
-import { Gauge } from 'prom-client';
+import { rateLimitConfig } from './config/rateLimit';
+import {
+  loadWebhookTokenBucketConfig,
+  rateLimitStore,
+  type WebhookTokenBucketConfig,
+} from './config/rateLimit';
+import type { RateLimitStoreInterface, TokenBucketEntry } from './lib/rateLimitStore';
 
 // ---------------------------------------------------------------------------
 // Configuration helpers
 // ---------------------------------------------------------------------------
 
-/** Validated, parsed rate-limiter configuration. */
-export interface RateLimiterConfig {
-  /** Maximum number of tokens a single provider bucket can hold. */
-  capacity: number;
-  /** Number of tokens added to each bucket per second. */
-  refillRatePerSec: number;
-  /** Backing store instance. If omitted, resolved from env. */
-  store?: BucketStore;
-}
-
-/**
- * Parse and validate rate-limiter configuration from environment variables.
- *
- * @throws {Error} If any value is missing, non-numeric, non-positive, or
- *   `capacity` is zero (which would make every delivery block forever).
- */
-export function loadRateLimiterConfig(): RateLimiterConfig {
-  const rawCapacity = process.env.WEBHOOK_BUCKET_CAPACITY ?? '10';
-  const rawRefill = process.env.WEBHOOK_REFILL_RATE_PER_SEC ?? '2';
-
-  const capacity = Number(rawCapacity);
-  const refillRatePerSec = Number(rawRefill);
-
-  if (!Number.isFinite(capacity) || capacity <= 0) {
-    throw new Error(
-      `[rateLimit] Invalid WEBHOOK_BUCKET_CAPACITY="${rawCapacity}". ` +
-        'Must be a finite positive number greater than zero.',
-    );
-  }
-
-  if (!Number.isFinite(refillRatePerSec) || refillRatePerSec <= 0) {
-    throw new Error(
-      `[rateLimit] Invalid WEBHOOK_REFILL_RATE_PER_SEC="${rawRefill}". ` +
-        'Must be a finite positive number greater than zero.',
-    );
-  }
-
-  return { capacity, refillRatePerSec };
-}
-
-// ---------------------------------------------------------------------------
-// BucketStore abstraction
-// ---------------------------------------------------------------------------
-
-/**
- * Represents a storage engine for token bucket state.
- */
-export interface BucketStore {
-  /**
-   * Atomically refills and attempts to consume a token for the given provider.
-   *
-   * @param providerId - Opaque provider identifier.
-   * @param capacity - Maximum number of tokens a bucket can hold.
-   * @param refillRatePerSec - Number of tokens refilled per second.
-   * @returns Object containing whether consumption was allowed and the current token count.
-   */
-  consume(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<{ allowed: boolean; tokens: number }>;
-
-  /**
-   * Retrieves the current token count for a provider after refilling.
-   *
-   * @param providerId - Opaque provider identifier.
-   * @param capacity - Maximum number of tokens a bucket can hold.
-   * @param refillRatePerSec - Number of tokens refilled per second.
-   */
-  getTokens(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<number>;
-}
-
-// ---------------------------------------------------------------------------
-// Memory Store Implementation
-// ---------------------------------------------------------------------------
-
-/**
- * Memory-backed implementation of BucketStore.
- */
-export class MemoryBucketStore implements BucketStore {
-  private readonly buckets: Map<string, { tokens: number; lastRefillMs: number }> = new Map();
-
-  private getOrCreate(providerId: string, capacity: number): { tokens: number; lastRefillMs: number } {
-    if (!this.buckets.has(providerId)) {
-      this.buckets.set(providerId, {
-        tokens: capacity,
-        lastRefillMs: Date.now(),
-      });
-    }
-    return this.buckets.get(providerId)!;
-  }
-
-  public async consume(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<{ allowed: boolean; tokens: number }> {
-    return this.consumeSync(providerId, capacity, refillRatePerSec);
-  }
-
-  public consumeSync(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): { allowed: boolean; tokens: number } {
-    const bucket = this.getOrCreate(providerId, capacity);
-    const nowMs = Date.now();
-    const elapsedSec = (nowMs - bucket.lastRefillMs) / 1_000;
-    const added = elapsedSec * refillRatePerSec;
-
-    bucket.tokens = Math.min(capacity, bucket.tokens + added);
-    bucket.lastRefillMs = nowMs;
-
-    if (bucket.tokens >= 1) {
-      bucket.tokens -= 1;
-      return { allowed: true, tokens: bucket.tokens };
-    }
-
-    return { allowed: false, tokens: bucket.tokens };
-  }
-
-  public async getTokens(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<number> {
-    return this.getTokensSync(providerId, capacity, refillRatePerSec);
-  }
-
-  public getTokensSync(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): number {
-    const bucket = this.getOrCreate(providerId, capacity);
-    const nowMs = Date.now();
-    const elapsedSec = (nowMs - bucket.lastRefillMs) / 1_000;
-    const added = elapsedSec * refillRatePerSec;
-    return Math.min(capacity, bucket.tokens + added);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Redis Store Implementation
-// ---------------------------------------------------------------------------
-
-/**
- * Redis-backed implementation of BucketStore.
- */
-export class RedisBucketStore implements BucketStore {
-  private readonly redis: Redis;
-
-  constructor(options: { host: string; port: number; password?: string }) {
-    this.redis = new Redis({
-      host: options.host,
-      port: options.port,
-      password: options.password,
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-  }
-
-  public async consume(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<{ allowed: boolean; tokens: number }> {
-    const key = `rate_limit:bucket:${providerId}`;
-    const nowMs = Date.now();
-
-    const luaScript = `
-      local key = KEYS[1]
-      local capacity = tonumber(ARGV[1])
-      local refill_rate = tonumber(ARGV[2])
-      local now_ms = tonumber(ARGV[3])
-
-      local state = redis.call('HMGET', key, 'tokens', 'lastRefillMs')
-      local tokens = tonumber(state[1])
-      local last_refill_ms = tonumber(state[2])
-
-      if not tokens then
-          tokens = capacity
-          last_refill_ms = now_ms
-      else
-          local elapsed_sec = (now_ms - last_refill_ms) / 1000.0
-          if elapsed_sec > 0 then
-              local added = elapsed_sec * refill_rate
-              tokens = math.min(capacity, tokens + added)
-              last_refill_ms = now_ms
-          end
-      end
-
-      local allowed = 0
-      if tokens >= 1.0 then
-          tokens = tokens - 1.0
-          allowed = 1
-      end
-
-      redis.call('HMSET', key, 'tokens', tostring(tokens), 'lastRefillMs', tostring(last_refill_ms))
-
-      local ttl = math.max(60, math.ceil(capacity / refill_rate) + 60)
-      redis.call('EXPIRE', key, ttl)
-
-      return {allowed, tokens}
-    `;
-
-    const result = (await this.redis.eval(
-      luaScript,
-      1,
-      key,
-      capacity.toString(),
-      refillRatePerSec.toString(),
-      nowMs.toString(),
-    )) as [number, number];
-
-    return {
-      allowed: result[0] === 1,
-      tokens: Number(result[1]),
-    };
-  }
-
-  public async getTokens(
-    providerId: string,
-    capacity: number,
-    refillRatePerSec: number,
-  ): Promise<number> {
-    const key = `rate_limit:bucket:${providerId}`;
-    const nowMs = Date.now();
-
-    const luaScript = `
-      local key = KEYS[1]
-      local capacity = tonumber(ARGV[1])
-      local refill_rate = tonumber(ARGV[2])
-      local now_ms = tonumber(ARGV[3])
-
-      local state = redis.call('HMGET', key, 'tokens', 'lastRefillMs')
-      local tokens = tonumber(state[1])
-      local last_refill_ms = tonumber(state[2])
-
-      if not tokens then
-          tokens = capacity
-      else
-          local elapsed_sec = (now_ms - last_refill_ms) / 1000.0
-          if elapsed_sec > 0 then
-              local added = elapsed_sec * refill_rate
-              tokens = math.min(capacity, tokens + added)
-          end
-      end
-
-      return tokens
-    `;
-
-    const result = await this.redis.eval(
-      luaScript,
-      1,
-      key,
-      capacity.toString(),
-      refillRatePerSec.toString(),
-      nowMs.toString(),
-    );
-
-    return Number(result);
-  }
-
-  /**
-   * Helper to close connection on shutdown.
-   */
-  public async disconnect(): Promise<void> {
-    await this.redis.disconnect();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Internal bucket state
-// ---------------------------------------------------------------------------
-
-interface QueueWaiter {
-  resolve: () => void;
-  reject: (err: Error) => void;
-}
-
-/** Runtime state for a single provider's token bucket. */
-interface BucketState {
-  /** Current token count (may be fractional between refill ticks). */
-  tokens: number;
-  /** Timestamp (ms) of the last refill calculation. */
-  lastRefillMs: number;
-  /** Pending waiters in FIFO order. Each resolves when a token is available. */
-  queue: Array<QueueWaiter>;
-}
-
-// ---------------------------------------------------------------------------
-// TokenBucketLimiter
-// ---------------------------------------------------------------------------
+export type RateLimiterConfig = WebhookTokenBucketConfig;
+export const loadRateLimiterConfig = loadWebhookTokenBucketConfig;
 
 /**
  * Per-provider token-bucket rate limiter.
@@ -354,37 +66,19 @@ interface BucketState {
 export class TokenBucketLimiter {
   private readonly capacity: number;
   private readonly refillRatePerSec: number;
-  private readonly buckets: Map<string, BucketState> = new Map();
-  private samplingIntervalId: ReturnType<typeof setInterval> | null = null;
+  private readonly store: RateLimitStoreInterface;
 
   /**
    * @param config - Parsed configuration.  Defaults to
    *   {@link loadRateLimiterConfig} (reads env vars) when omitted.
+   * @param store - Shared rate-limit store. Defaults to the process-wide store
+   *   from `src/config/rateLimit.ts`.
    */
-  constructor(config?: RateLimiterConfig) {
+  constructor(config?: RateLimiterConfig, store: RateLimitStoreInterface = rateLimitStore) {
     const resolved = config ?? loadRateLimiterConfig();
     this.capacity = resolved.capacity;
     this.refillRatePerSec = resolved.refillRatePerSec;
-
-    if (resolved.store) {
-      this.store = resolved.store;
-    } else {
-      const storeType = process.env.RATE_LIMIT_STORE ?? 'memory';
-      if (storeType === 'redis') {
-        const host = process.env.REDIS_HOST;
-        const port = process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379;
-        const password = process.env.REDIS_PASSWORD;
-
-        if (!host) {
-          console.warn('[rateLimit] Redis store requested but REDIS_HOST is missing. Falling back to memory store.');
-          this.store = new MemoryBucketStore();
-        } else {
-          this.store = new RedisBucketStore({ host, port, password });
-        }
-      } else {
-        this.store = new MemoryBucketStore();
-      }
-    }
+    this.store = store;
   }
 
   // -------------------------------------------------------------------------
@@ -405,12 +99,10 @@ export class TokenBucketLimiter {
     try {
       const { allowed } = await this.store.consume(providerId, this.capacity, this.refillRatePerSec);
 
-      if (allowed) {
-        return;
-      }
-    } catch (err) {
-      console.error(`[rateLimit] Redis error in acquireToken:`, err);
-      throw err;
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      this.store.setTokenBucket(providerId, bucket);
+      return;
     }
 
     // Bucket is empty — queue the caller and record the throttle event.
@@ -419,9 +111,9 @@ export class TokenBucketLimiter {
       `[rateLimit] Provider "${redactId(providerId)}" throttled — queuing delivery.`,
     );
 
-    return new Promise<void>((resolve, reject) => {
-      const bucket = this.getOrCreateBucket(providerId);
-      bucket.queue.push({ resolve, reject });
+    return new Promise<void>((resolve) => {
+      bucket.queue.push(resolve);
+      this.store.setTokenBucket(providerId, bucket);
       this.scheduleRefill(providerId);
     });
   }
@@ -520,15 +212,34 @@ export class TokenBucketLimiter {
   /**
    * Retrieve or lazily create the bucket state for a provider.
    */
-  private getOrCreateBucket(providerId: string): BucketState {
-    if (!this.buckets.has(providerId)) {
-      this.buckets.set(providerId, {
-        tokens: this.capacity,
-        lastRefillMs: Date.now(),
-        queue: [],
-      });
-    }
-    return this.buckets.get(providerId)!;
+  private getBucket(providerId: string): TokenBucketEntry {
+    const existing = this.store.getTokenBucket(providerId);
+    if (existing) return existing;
+
+    const created: TokenBucketEntry = {
+      tokens: this.capacity,
+      lastRefillMs: Date.now(),
+      queue: [],
+    };
+    this.store.setTokenBucket(providerId, created);
+    return created;
+  }
+
+  /**
+   * Apply elapsed-time token refill to the named bucket using the continuous
+   * token-bucket formula:
+   *
+   *   newTokens = min(capacity, currentTokens + elapsed_sec * refillRate)
+   */
+  private refillBucket(providerId: string): void {
+    const bucket = this.getBucket(providerId);
+    const nowMs = Date.now();
+    const elapsedSec = (nowMs - bucket.lastRefillMs) / 1_000;
+    const added = elapsedSec * this.refillRatePerSec;
+
+    bucket.tokens = Math.min(this.capacity, bucket.tokens + added);
+    bucket.lastRefillMs = nowMs;
+    this.store.setTokenBucket(providerId, bucket);
   }
 
   /**
@@ -539,7 +250,6 @@ export class TokenBucketLimiter {
    * re-schedules itself while the queue is non-empty.
    */
   private scheduleRefill(providerId: string): void {
-    this.getBucket(providerId);
     // Time (ms) until the next whole token is available.
     const msUntilToken = Math.ceil((1 / this.refillRatePerSec) * 1_000);
 
@@ -576,6 +286,7 @@ export class TokenBucketLimiter {
         break;
       }
     }
+    this.store.setTokenBucket(providerId, bucket);
 
     if (bucket.queue.length > 0) {
       this.scheduleRefill(providerId);

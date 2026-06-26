@@ -43,7 +43,7 @@
  *  - Headers expose only aggregate counts, never raw identifiers.
  */
 
-import { RateLimiterConfig } from '../middleware/rateLimiter';
+import type { RateLimiterConfig } from '../middleware/rateLimiter';
 import { RateLimitStore } from '../lib/rateLimitStore';
 
 function toMs(value: string | undefined, fallback: number): number {
@@ -130,6 +130,52 @@ export const rateLimitConfig = {
     sendHeaders: true,
     ...sharedStore,
   } satisfies RateLimiterConfig,
+
+  /**
+   * Webhook token bucket configuration for rate limiting outbound webhook deliveries.
+   */
+  webhook: {
+    capacity: toCount(process.env.WEBHOOK_BUCKET_CAPACITY, 10),
+    refillRatePerSec: toCount(process.env.WEBHOOK_REFILL_RATE_PER_SEC, 2),
+  },
 };
 
 export type RateLimitTier = keyof typeof rateLimitConfig;
+
+/** Validated, parsed outbound webhook token-bucket configuration. */
+export interface WebhookTokenBucketConfig {
+  /** Maximum number of tokens a single provider bucket can hold. */
+  capacity: number;
+  /** Number of tokens added to each bucket per second. */
+  refillRatePerSec: number;
+}
+
+/**
+ * Parse and validate outbound webhook token-bucket configuration.
+ *
+ * @throws {Error} If any value is non-numeric, non-positive, or would make
+ * every delivery block forever.
+ */
+export function loadWebhookTokenBucketConfig(env: NodeJS.ProcessEnv = process.env): WebhookTokenBucketConfig {
+  const rawCapacity = env.WEBHOOK_BUCKET_CAPACITY ?? '10';
+  const rawRefill = env.WEBHOOK_REFILL_RATE_PER_SEC ?? '2';
+
+  const capacity = Number(rawCapacity);
+  const refillRatePerSec = Number(rawRefill);
+
+  if (!Number.isFinite(capacity) || capacity <= 0) {
+    throw new Error(
+      `[rateLimit] Invalid WEBHOOK_BUCKET_CAPACITY="${rawCapacity}". ` +
+        'Must be a finite positive number greater than zero.',
+    );
+  }
+
+  if (!Number.isFinite(refillRatePerSec) || refillRatePerSec <= 0) {
+    throw new Error(
+      `[rateLimit] Invalid WEBHOOK_REFILL_RATE_PER_SEC="${rawRefill}". ` +
+        'Must be a finite positive number greater than zero.',
+    );
+  }
+
+  return { capacity, refillRatePerSec };
+}
