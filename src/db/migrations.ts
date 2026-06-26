@@ -37,8 +37,8 @@ const MIGRATIONS: Migration[] = [
           amount        INTEGER NOT NULL CHECK (amount >= 0),
           status        TEXT    NOT NULL DEFAULT 'draft'
                                 CHECK (status IN (
-                                  'draft', 'active', 'completed', 'disputed', 'cancelled'
-                                )),
+                                          'draft', 'active', 'completed', 'disputed', 'cancelled'
+                                        )),
           created_at    TEXT    NOT NULL
         );
 
@@ -102,7 +102,7 @@ const MIGRATIONS: Migration[] = [
           reviewer_id TEXT    NOT NULL REFERENCES users(id),
           target_id   TEXT    NOT NULL REFERENCES users(id),
           rating      INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-          comment     TEXT CHECK (length(comment) <= 1000),
+          comment     TEXT    CHECK (length(comment) <= 1000),
           context_id  TEXT    NOT NULL REFERENCES contracts(id),
           created_at  TEXT    NOT NULL,
           UNIQUE(reviewer_id, target_id, context_id)

@@ -13,7 +13,7 @@
 import { createHash } from 'crypto';
 import { ReputationService, computeWeightedReputationScore } from './reputation.service';
 import { getDb, closeDb } from '../db/database';
-import Database from '../db/betterSqlite3';
+import Database, { type Database as DatabaseInstance } from '../db/betterSqlite3';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
 import { auditService } from '../audit/service';
 
@@ -51,7 +51,7 @@ function sha256(text: string): string {
  * @param freelancerId - User who plays the freelancer role.
  */
 function insertContract(
-  db: Database.Database,
+  db: DatabaseInstance,
   id: string,
   clientId: string = REVIEWER_ID,
   freelancerId: string = TARGET_ID,
@@ -66,7 +66,7 @@ function insertContract(
 /**
  * Returns the total number of reputation_entries rows currently in the DB.
  */
-function reputationRowCount(db: Database.Database): number {
+function reputationRowCount(db: DatabaseInstance): number {
   const row = db.prepare<[], { c: number }>('SELECT COUNT(*) AS c FROM reputation_entries').get();
   return row?.c ?? 0;
 }
@@ -76,7 +76,7 @@ function reputationRowCount(db: Database.Database): number {
 // ---------------------------------------------------------------------------
 
 describe('ReputationService.createRating — anti-abuse protections', () => {
-  let db: Database.Database;
+  let db: DatabaseInstance;
 
   beforeAll(() => {
     // Use a fresh in-memory SQLite instance with full schema migrations.

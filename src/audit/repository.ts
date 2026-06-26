@@ -29,9 +29,9 @@ export function createDefaultAuditRepository(): AuditLogRepository {
       (process.env['NODE_ENV'] === 'test'
         ? ':memory:'
         : path.join(process.cwd(), 'talenttrust-audit.db'));
-    // Load the native driver only when the SQLite backend is selected so
+    // Load the native module only when the SQLite backend is selected so
     // in-memory tests can run on machines without compiled bindings.
-    const db = new Database.default(dbPath);
+    const db = new Database(dbPath);
     return new SqliteAuditRepository(db);
   }
 
