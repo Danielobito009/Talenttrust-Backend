@@ -62,6 +62,30 @@ export class CircuitBreakerRegistry {
     return true;
   }
 
+  /**
+   * Resets a breaker and records an audit entry.
+   * @param name - Breaker name to reset.
+   * @param performedBy - Identifier of the admin performing the reset (e.g., userId).
+   * @throws AppError with status 400 if breaker does not exist.
+   */
+  resetBreaker(name: string, performedBy: string): void {
+    if (!this.reset(name)) {
+      // Import AppError from errors/appError.ts
+      const { AppError } = require('../errors/appError');
+      throw new AppError(400, 'bad_request', `Circuit breaker "${name}" not found`);
+    }
+    // Record audit entry
+    const { auditService } = require('../audit/service');
+    auditService.log({
+      action: 'ADMIN_ACTION',
+      severity: 'INFO',
+      actor: performedBy,
+      resource: 'circuit_breaker',
+      resourceId: name,
+      metadata: {},
+    });
+  }
+
   /** Exposed for testing — clears all registered breakers. */
   clear(): void {
     this.breakers.clear();

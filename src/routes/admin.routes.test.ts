@@ -3,12 +3,28 @@
  * @description Unit tests for admin queue health endpoint.
  */
 
+process.env.JWT_SECRET = 'test-secret';
+
 import express from 'express';
 import http from 'http';
 import jwt from 'jsonwebtoken';
 import { adminRouter } from './admin.routes';
+import { circuitBreakerRegistry } from '../circuit-breaker/registry';
+import { errorHandler } from '../middleware/errorHandlers';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret';
+jest.mock('../services/webhook.service', () => {
+  return {
+    WebhookService: jest.fn().mockImplementation(() => {
+      return {
+        replayAll: jest.fn().mockResolvedValue({ attempted: 2, succeeded: 2, failed: 0, deduped: 0 }),
+      };
+    }),
+  };
+});
+
+
+
+const JWT_SECRET = process.env.JWT_SECRET;
 
 interface SimpleResponse {
   statusCode: number;
@@ -66,7 +82,9 @@ describe('adminRouter', () => {
 
   beforeAll((done) => {
     const a = express();
+    a.use(express.json());
     a.use('/api/v1/admin', adminRouter);
+    a.use(errorHandler);
     const s = a.listen(0, '127.0.0.1', done);
     void (server = s);
   });
@@ -151,4 +169,71 @@ describe('adminRouter', () => {
       expect(typeof body.data.timestamp).toBe('number');
     });
   });
+
+  describe('POST /circuit-breaker/:name/reset', () => {
+    beforeEach(() => {
+      circuitBreakerRegistry.getOrCreate('test-reset-dep');
+    });
+
+    afterEach(() => {
+      circuitBreakerRegistry.clear();
+    });
+
+    it('returns 401 without Authorization header', async () => {
+      const res = await request(server, 'POST', '/api/v1/admin/circuit-breaker/test-reset-dep/reset');
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 403 for non-admin role', async () => {
+      const res = await request(
+        server,
+        'POST',
+        '/api/v1/admin/circuit-breaker/test-reset-dep/reset',
+        'demo-user-token'
+      );
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 400 Bad Request if breaker name is invalid or not registered', async () => {
+      const token = createToken('admin');
+      const res = await request(server, 'POST', '/api/v1/admin/circuit-breaker/invalid-dep/reset', token);
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.error.code).toBe('bad_request');
+    });
+
+    it('returns 200 and success object on successful reset', async () => {
+      const token = createToken('admin');
+      const res = await request(server, 'POST', '/api/v1/admin/circuit-breaker/test-reset-dep/reset', token);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body).toEqual({ success: true, name: 'test-reset-dep' });
+    });
+  });
+
+  describe('POST /webhooks/dlq/replay-all', () => {
+    it('returns 401 without Authorization header', async () => {
+      const res = await request(server, 'POST', '/api/v1/admin/webhooks/dlq/replay-all');
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 403 for non-admin role', async () => {
+      const token = createToken('client');
+      const res = await request(server, 'POST', '/api/v1/admin/webhooks/dlq/replay-all', token);
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('returns 200 with replay summary for admin', async () => {
+      const token = createToken('admin');
+      const res = await request(server, 'POST', '/api/v1/admin/webhooks/dlq/replay-all', token);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body).toEqual({
+        status: 'success',
+        data: { attempted: 2, succeeded: 2, failed: 0, deduped: 0 }
+      });
+    });
+  });
 });
+
+

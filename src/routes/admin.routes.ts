@@ -7,9 +7,10 @@
  * @security Requires admin role via JWT authentication
  */
 
-import { Router, Request, Response } from 'express';
-import { QueueManager, getWebhookDLQStorage } from '../queue';
+import { Router, Request, Response, NextFunction } from 'express';
+import { QueueManager } from '../queue';
 import { requireAuth, requireRole } from '../middleware/authorization';
+import { adminAuthGuard, AdminAuthenticatedRequest } from '../middleware/adminAuthGuard';
 import { circuitBreakerRegistry } from '../circuit-breaker/registry';
 import { WebhookService } from '../services/webhook.service';
 
@@ -77,5 +78,31 @@ adminRouter.post(
     const summary = await service.replayAll({ concurrency });
 
     res.status(200).json({ status: 'success', data: summary });
+  }
+);
+
+/**
+ * POST /api/v1/admin/circuit-breaker/:name/reset
+ *
+ * Resets a single circuit breaker by name. Protected by adminAuthGuard.
+ * Logs an audit entry with the performing admin's identity.
+ */
+adminRouter.post(
+  '/circuit-breaker/:name/reset',
+  adminAuthGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { name } = req.params;
+      const performedBy = (req as AdminAuthenticatedRequest).user?.id || 'unknown-admin';
+
+      circuitBreakerRegistry.resetBreaker(name, performedBy);
+
+      res.status(200).json({
+        success: true,
+        name,
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );

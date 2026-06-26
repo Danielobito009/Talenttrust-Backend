@@ -1,5 +1,6 @@
 import { CircuitBreakerRegistry, circuitBreakerRegistry } from './registry';
 import { CircuitBreaker } from './CircuitBreaker';
+import { auditService } from '../audit/service';
 
 // Use a fresh registry for each test to avoid cross-test pollution
 let registry: CircuitBreakerRegistry;
@@ -55,6 +56,46 @@ describe('CircuitBreakerRegistry', () => {
     registry.getOrCreate('dep-b');
     registry.clear();
     expect(registry.getAll()).toHaveLength(0);
+  });
+
+  describe('resetBreaker', () => {
+    let logSpy: jest.SpiedFunction<typeof auditService.log>;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn(auditService, 'log').mockImplementation(() => {
+        return {} as any;
+      });
+    });
+
+    afterEach(() => {
+      logSpy.mockRestore();
+    });
+
+    it('throws AppError if breaker not found', () => {
+      expect(() => registry.resetBreaker('nonexistent', 'admin-1')).toThrow(
+        expect.objectContaining({ statusCode: 400, code: 'bad_request' })
+      );
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it('resets breaker and logs audit on success', async () => {
+      const breaker = registry.getOrCreate('dep-a', { failureThreshold: 1 });
+      await expect(breaker.execute(async () => { throw new Error('fail'); })).rejects.toThrow();
+      expect(breaker.getState()).toBe('OPEN');
+
+      registry.resetBreaker('dep-a', 'admin-123');
+
+      expect(breaker.getState()).toBe('CLOSED');
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'ADMIN_ACTION',
+          severity: 'INFO',
+          actor: 'admin-123',
+          resource: 'circuit_breaker',
+          resourceId: 'dep-a',
+        })
+      );
+    });
   });
 });
 
